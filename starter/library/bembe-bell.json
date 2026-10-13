@@ -1,0 +1,10 @@
+{
+  "title": "Bembé bell (12/8 standard bell)",
+  "tempo": 90,
+  "beats": 4,
+  "count_in": 4,
+  "voices": [
+    { "name": "bell", "instrument": "bell", "pulses": 12, "onsets": [0, 2, 4, 5, 7, 9, 11] },
+    { "name": "pulse", "instrument": "click", "pulses": 4, "onsets": [{ "at": 0, "accent": true }, 1, 2, 3], "gain": 0.4 }
+  ]
+}

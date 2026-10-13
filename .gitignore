@@ -1,0 +1,12 @@
+/target
+# Local notes, not part of the repository
+/docs/
+# Learning material belongs in a learning directory (djembot init DIR), not here
+/lessons/
+/library/
+/JOURNAL.md
+# Personal Claude Code settings and context (settings.json and CLAUDE.md are shared)
+.claude/settings.local.json
+CLAUDE.local.md
+# Private scrub rule overlay — a symlink, never content
+.gitleaks.local.toml

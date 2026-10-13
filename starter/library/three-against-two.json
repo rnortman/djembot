@@ -1,0 +1,11 @@
+{
+  "title": "Three against two",
+  "tempo": 60,
+  "beats": 2,
+  "count_in": 2,
+  "voices": [
+    { "name": "three", "instrument": "bell", "pulses": 3, "onsets": [0, 1, 2], "pan": -0.4 },
+    { "name": "two", "instrument": "conga", "pulses": 2, "onsets": [0, 1], "pan": 0.4 },
+    { "name": "pulse", "instrument": "click", "pulses": 2, "onsets": [{ "at": 0, "accent": true }, 1], "gain": 0.4 }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "title": "Rumba clave 2-3",
+  "tempo": 90,
+  "beats": 4,
+  "count_in": 4,
+  "voices": [
+    { "name": "clave", "instrument": "clave", "pulses": 16, "onsets": [2, 4, 8, 11, 15] },
+    { "name": "pulse", "instrument": "click", "pulses": 4, "onsets": [{ "at": 0, "accent": true }, 1, 2, 3], "gain": 0.4 }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "title": "Four beats, sixteen pulses",
+  "tempo": 90,
+  "beats": 4,
+  "count_in": 4,
+  "voices": [
+    { "name": "pulse", "instrument": "click", "pulses": 4, "onsets": [{ "at": 0, "accent": true }, 1, 2, 3], "gain": 0.4 },
+    { "name": "16ths", "instrument": "block", "pulses": 16,
+      "onsets": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] }
+  ]
+}

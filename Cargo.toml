@@ -1,0 +1,32 @@
+[package]
+name = "djembot"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Rhythm trainer for learning by ear: an LLM instructor plays rhythms through a window and reads how you played along"
+license = "Apache-2.0"
+repository = "https://github.com/rnortman/djembot"
+readme = "README.md"
+keywords = ["rhythm", "music", "ear-training", "percussion", "claude-code"]
+categories = ["multimedia::audio", "command-line-utilities"]
+include = ["/src", "/tests", "/starter", "/build.rs", "/README.md", "/CONTRIBUTING.md", "/CHANGELOG.md", "/LICENSE", "/NOTICE"]
+
+[[bin]]
+name = "djembot"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+cpal = "0.18"
+eframe = "0.36"
+egui = "0.36"
+egui_commonmark = { version = "0.25", default-features = false, features = ["pulldown_cmark"] }
+evdev = "0.13"
+libc = "0.2"
+rtrb = "0.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+pkg-config = "0.3"
