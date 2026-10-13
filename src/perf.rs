@@ -365,6 +365,8 @@ impl Performance {
             rate,
             window,
             lead: reach(window, neighbours.before),
+            // TODO(closing-tap-trail): one window after the end drops a late
+            // closing tap that would be a wide extra anywhere else.
             trail: reach(window, neighbours.after),
             attacca: neighbours.before.is_some(),
             last: neighbours.after.is_none(),
@@ -1064,6 +1066,7 @@ fn xdg_dir(xdg: Option<OsString>, home: Option<OsString>, fallback: &str) -> Opt
 
 /// Where run files go: `$XDG_DATA_HOME/djembot/runs`, by default
 /// `~/.local/share/djembot/runs`.
+// TODO(runs-in-learning-dir): let the learning directory choose.
 pub fn runs_dir() -> Option<PathBuf> {
     let base = xdg_dir(
         env::var_os("XDG_DATA_HOME"),

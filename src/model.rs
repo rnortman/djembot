@@ -195,6 +195,7 @@ pub struct Exercise {
     /// Beats per minute, already clamped to `TEMPO_MIN..=TEMPO_MAX`.
     pub tempo: f64,
     pub beats: u32,
+    // TODO(cycle-countdown): how the cycle count is shown, per block.
     pub cycles: Option<u32>,
     pub count_in: u32,
     /// Whether the window starts with the grid and necklace hidden.
@@ -205,9 +206,13 @@ pub struct Exercise {
     /// How a finite block ends.
     pub ending: Ending,
     /// What follows the block's last cycle.
+    // TODO(advance-on-threshold): a rule that repeats the block until the
+    // user passes.
     pub next: Next,
     /// Whether the window draws where the music is: the playhead and the
     /// flash of the strokes it passes.
+    // TODO(feedback-mode): whether the marks and counts show live, after
+    // the block, or never; separate from the playhead.
     pub playhead: bool,
 }
 

@@ -19,6 +19,8 @@ macro_rules! kit {
 /// every other file at its own path.
 pub const FILES: &[(&str, &str)] = &[
     ("CLAUDE.md", include_str!("../starter/instructor.md")),
+    // TODO(journal-log): the journal is appended to forever; sessions
+    // belong in log/.
     kit!("JOURNAL.md"),
     kit!("library/bembe-bell.json"),
     kit!("library/four-against-three.json"),
