@@ -1108,11 +1108,15 @@ impl<S> App<S> {
         }
     }
 
-    /// The run so far of the open performance of the block being heard,
+    fn report(&self) -> Response {
+        self.report_at(Mono::now())
+    }
+
+    /// The run so far of the open performance of the block heard at `now`,
     /// else of the last one opened; else the last one closed in this
     /// session with the file it was written to.
-    fn report(&self) -> Response {
-        let sounding = self.link_now(Mono::now()).map(|l| l.block);
+    fn report_at(&self, now: Mono) -> Response {
+        let sounding = self.link_now(now).map(|l| l.block);
         let open = self
             .live
             .iter()
@@ -3330,6 +3334,17 @@ mod tests {
     /// A clock for driving the callback: tick `k` starts at `t0 + k·TICK`,
     /// `latency` ahead of the speakers. A block played from tick 0 is heard
     /// at frame `h` at `wall(h)`.
+    ///
+    /// `t0` is unrelated to `Mono::now()`: a test driven by `Sim` asserts
+    /// about a simulated instant (`transport_at(until)`, `report_at(until)`,
+    /// `count_in_beat_at`, `link_now(at)`). Anything that resolves "now"
+    /// from the wall clock — `transport()`, the `*_now()` helpers, a drawn
+    /// frame's playhead and count-in, `Request::Report`'s choice among open
+    /// performances — answers about the host's uptime, not the run. `t0`
+    /// lies past any host's uptime, so such a read sees the same before-`t0`
+    /// clock on every host; a `Sim` test uses one only for what does not
+    /// depend on it (a frame's hit text and judged dots, a report with one
+    /// performance open).
     struct Sim {
         t0: Mono,
         k: u64,
@@ -3339,7 +3354,8 @@ mod tests {
     impl Sim {
         fn new(latency_ms: u64) -> Sim {
             Sim {
-                t0: Mono(1_000_000_000_000),
+                // ~31.7 years after boot, in nanoseconds.
+                t0: Mono(1_000_000_000_000_000_000),
                 k: 0,
                 latency: Duration::from_millis(latency_ms),
             }
@@ -4152,6 +4168,8 @@ mod tests {
     }
 
     const ORIGIN_B: f64 = 288_000.0;
+    /// The `Sim` latency of `play_boundary`.
+    const BOUNDARY_LATENCY_MS: u64 = 20;
 
     /// The open or closed performance of `block`.
     fn perf_of(app: &App<()>, block: usize) -> Option<&Performance> {
@@ -4175,7 +4193,7 @@ mod tests {
         app.handle(part_score_with(onsets_a, onsets_b, "f"));
         app.start(0).unwrap();
         let part = part_f(&app);
-        let mut sim = Sim::new(20);
+        let mut sim = Sim::new(BOUNDARY_LATENCY_MS);
         let mut strokes = strokes
             .iter()
             .map(|&f| (sim.wall(f), part.clone()))
@@ -4189,11 +4207,12 @@ mod tests {
     /// recorded, as `(cycle, target, error)` for a hit and `None` for an
     /// extra.
     fn boundary_judgments(strokes: &[f64]) -> [Vec<Option<(u32, usize, f64)>>; 2] {
-        let (app, ..) = play_boundary(&[0, 6, 15], &[0, 6, 15], strokes, ORIGIN_B + 96_000.0);
+        let until = ORIGIN_B + 96_000.0;
+        let (app, ..) = play_boundary(&[0, 6, 15], &[0, 6, 15], strokes, until);
         assert_eq!(app.live.len(), 1, "guided closed after its judged span");
         let run = app.last_run.as_ref().unwrap();
         assert_eq!((run.label.as_str(), run.ended_by), ("guided", EndedBy::End));
-        let report = app.report();
+        let report = app.report_at(Sim::new(BOUNDARY_LATENCY_MS).wall(until));
         assert_eq!(report.run.as_ref().map(|r| r.label.as_str()), Some("alone"));
         [0, 1].map(|block| {
             hits_of(&app, block)
@@ -4556,27 +4575,23 @@ mod tests {
     const CAL_BEAT: f64 = 28_800.0;
 
     /// Plays the calibration block until click `until`, tapping each click
-    /// in `clicks` 10 ms late.
+    /// in `clicks` 10 ms late; returns the simulated instant it ran to.
     fn calibrate(
         app: &mut App<()>,
         cb: &mut Callback,
         hit_tx: &mpsc::Sender<(Hit, Part)>,
         clicks: impl IntoIterator<Item = u32>,
         until: u32,
-    ) {
+    ) -> Mono {
         let part = part_f(app);
         let mut sim = Sim::new(0);
         let mut strokes: Vec<(Mono, Part)> = clicks
             .into_iter()
             .map(|n| (sim.wall(n as f64 * CAL_BEAT + 480.0), part.clone()))
             .collect();
-        sim.run(
-            app,
-            cb,
-            sim.wall(until as f64 * CAL_BEAT),
-            &mut strokes,
-            hit_tx,
-        );
+        let end = sim.wall(until as f64 * CAL_BEAT);
+        sim.run(app, cb, end, &mut strokes, hit_tx);
+        end
     }
 
     fn cal_store(name: &str) -> (PathBuf, Store) {
@@ -4599,9 +4614,9 @@ mod tests {
         // Comes in on the fourth click, skips two, and taps on past the
         // 24th hit.
         let clicks = (3..32).filter(|n| *n != 10 && *n != 17);
-        calibrate(&mut app, &mut cb, &hit_tx, clicks, 40);
+        let end = calibrate(&mut app, &mut cb, &hit_tx, clicks, 40);
         assert!(app.live.is_empty());
-        assert_eq!(app.transport(), Transport::Stopped);
+        assert_eq!(app.transport_at(end), Transport::Stopped);
         let run = app.last_run.as_ref().unwrap();
         assert_eq!(run.ended_by, EndedBy::Enough);
         assert_eq!(run.hits.len(), perf::CALIBRATION_TAPS);
@@ -4637,27 +4652,17 @@ mod tests {
             .map(|n| (sim.wall(n as f64 * CAL_BEAT - 4_800.0), part.clone()))
             .collect();
         let click = 24.0 * CAL_BEAT;
-        sim.run(
-            &mut app,
-            &mut cb,
-            sim.wall(click - 2_400.0),
-            &mut strokes,
-            &hit_tx,
-        );
+        let until = sim.wall(click - 2_400.0);
+        sim.run(&mut app, &mut cb, until, &mut strokes, &hit_tx);
         let live = app.live.last().expect("the 24th click has not sounded");
         assert_eq!(live.perf.hit_count(), perf::CALIBRATION_TAPS);
-        assert!(matches!(app.transport(), Transport::Playing(_)));
+        assert!(matches!(app.transport_at(until), Transport::Playing(_)));
 
-        sim.run(
-            &mut app,
-            &mut cb,
-            sim.wall(click + CAL_BEAT),
-            &mut strokes,
-            &hit_tx,
-        );
+        let until = sim.wall(click + CAL_BEAT);
+        sim.run(&mut app, &mut cb, until, &mut strokes, &hit_tx);
         assert!(app.live.is_empty());
         assert_eq!(ended_by(&app), Some(EndedBy::Enough));
-        assert_eq!(app.transport(), Transport::Stopped);
+        assert_eq!(app.transport_at(until), Transport::Stopped);
     }
 
     #[test]
@@ -4687,15 +4692,10 @@ mod tests {
         assert!(live.perf.targets_heard());
 
         // The callback drains the queue; a later pass stops and closes.
-        sim.run(
-            &mut app,
-            &mut cb,
-            sim.wall(24.0 * CAL_BEAT),
-            &mut vec![],
-            &hit_tx,
-        );
+        let until = sim.wall(24.0 * CAL_BEAT);
+        sim.run(&mut app, &mut cb, until, &mut vec![], &hit_tx);
         assert_eq!(ended_by(&app), Some(EndedBy::Enough));
-        assert_eq!(app.transport(), Transport::Stopped);
+        assert_eq!(app.transport_at(until), Transport::Stopped);
     }
 
     #[test]
@@ -4710,17 +4710,12 @@ mod tests {
             .flat_map(|k| [0.0, 90_000.0].map(|at| k as f64 * 96_000.0 + at + 480.0))
             .map(|h| (sim.wall(h), part.clone()))
             .collect();
-        sim.run(
-            &mut app,
-            &mut cb,
-            sim.wall(15.0 * 96_000.0),
-            &mut strokes,
-            &hit_tx,
-        );
+        let until = sim.wall(15.0 * 96_000.0);
+        sim.run(&mut app, &mut cb, until, &mut strokes, &hit_tx);
         let live = app.live.last().expect("still open");
         assert_eq!(live.perf.hit_count(), 30);
         assert!(live.perf.hit_count() > perf::CALIBRATION_TAPS);
-        assert!(matches!(app.transport(), Transport::Playing(_)));
+        assert!(matches!(app.transport_at(until), Transport::Playing(_)));
         assert!(app.last_run.is_none());
     }
 
@@ -5060,6 +5055,24 @@ mod tests {
     }
 
     #[test]
+    fn a_report_names_the_open_run_of_the_block_being_heard() {
+        let (mut app, mut cb, hit_tx, _tx) = app_with(Store::default());
+        app.handle(part_score(&[0, 6, 15], "f"));
+        app.start(0).unwrap();
+        let mut sim = Sim::new(20);
+        let label = |r: Response| r.run.map(|run| run.label);
+        let before = sim.wall(ORIGIN_B - 1_000.0);
+        sim.run(&mut app, &mut cb, before, &mut vec![], &hit_tx);
+        assert_eq!(app.live.len(), 2, "both performances open");
+        assert_eq!(app.live.last().map(|l| l.block), Some(1));
+        assert_eq!(label(app.report_at(before)).as_deref(), Some("guided"));
+        let after = sim.wall(ORIGIN_B + 1_000.0);
+        sim.run(&mut app, &mut cb, after, &mut vec![], &hit_tx);
+        assert_eq!(app.live.len(), 2, "guided's judged span is open");
+        assert_eq!(label(app.report_at(after)).as_deref(), Some("alone"));
+    }
+
+    #[test]
     fn a_report_after_a_stop_across_a_boundary_names_no_other_blocks_file() {
         let dir = scratch("stop-boundary");
         let store = Store {
@@ -5070,16 +5083,11 @@ mod tests {
         app.handle(part_score(&[0, 6, 15], "f"));
         app.start(0).unwrap();
         let mut sim = Sim::new(20);
-        sim.run(
-            &mut app,
-            &mut cb,
-            sim.wall(ORIGIN_B - 1_000.0),
-            &mut vec![],
-            &hit_tx,
-        );
+        let until = sim.wall(ORIGIN_B - 1_000.0);
+        sim.run(&mut app, &mut cb, until, &mut vec![], &hit_tx);
         assert_eq!(app.live.len(), 2, "both performances open");
         app.handle(Request::Stop);
-        let report = app.report();
+        let report = app.report_at(until);
         let run = report.run.unwrap();
         assert_eq!((run.label.as_str(), run.hits.len()), ("alone", 0));
         assert!(run.misses.is_empty());
