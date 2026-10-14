@@ -614,6 +614,7 @@ impl Performance {
 
     /// Whether the judged span of a finite block has ended by `heard` (a
     /// mixer frame, before calibration): later strokes are ignored.
+    // TODO(correctness-negative-offset-ends-judged-block-early-and-terminal)
     pub fn closed(&self, heard: f64) -> bool {
         self.end
             .is_some_and(|e| heard - self.offset > (e + self.trail) as f64)

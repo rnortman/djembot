@@ -682,6 +682,7 @@ impl<S> App<S> {
                     }
                 }
                 None if *finished => ended.push(i),
+                // TODO(correctness-judged-block-never-ends-when-score-ends-inside-its-trail)
                 None => {}
             }
         }
@@ -923,9 +924,6 @@ impl<S> App<S> {
     /// Emits `started` for `block`; a block without a part is owed its
     /// `ended` by `end_block`, one with a part gets it when its performance
     /// closes.
-    // TODO(wait-ended-before-started): at an attacca boundary this fires
-    // before the previous block's performance closes, so `wait` prints
-    // `started B` before `ended A`.
     fn started(&mut self, block: usize) {
         let has_part = self
             .doc
@@ -4969,6 +4967,11 @@ mod tests {
             .collect()
     }
 
+    /// The boundary orders asserted here are the `wait` contract stated in
+    /// `starter/instructor.md`: a block without a part has its `ended …
+    /// next=B` before `started B`; a block with a part that plays through
+    /// has its `ended by=end` after `started B`, once its judged span
+    /// closes. Flipping either changes the contract, not just this test.
     #[test]
     fn events_are_emitted_once_per_block_play() {
         // A listen-only score played through, restarted and stopped.

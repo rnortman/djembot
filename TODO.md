@@ -21,15 +21,6 @@ how the user stands against it at least a cycle before the boundary.
 by=repeat`), and `report` shows the whole stay in the section, either
 as one run file with the cycle count grown or one per pass.
 
-## `wait-ended-before-started`
-
-At an attacca boundary `djembot wait` prints `started label=B` before
-`ended label=A …`: the window emits `started` when the music reaches
-the next block, and A's `ended` only when its judged span closes, a
-trail later. Harmless, but the `ended` before the `started` would read
-in order. Either hold B's `started` until A's `ended` is emitted, or
-document the order in the instructor contract.
-
 ## `feedback-mode`
 
 A way to show the score with no live feedback. `playhead: false` still
@@ -106,3 +97,40 @@ pulse and cycle its per-note and over-time rows file each extra under;
 the grid and necklace draw an extra where it was struck and are
 unaffected. Stated for the closing one only it is a special case of the
 annotation rule.
+
+## `correctness-judged-block-never-ends-when-score-ends-inside-its-trail`
+
+When a block with a part is followed attacca by a last block that ends
+before the first block's judged span closes (a one-beat closer, or a
+short fast tail after a wide window), the first block is never retired
+while the score plays. Once the mixer stops, the snapshot sits at the
+last block's end, not the first block's, so `judge_hits` has no
+reference clock for it and does not count it as finished; meanwhile
+`follow_score` emits the last block's terminal `ended`, and `wait`
+returns without the first block's `run=`. The performance stays open
+until a later stop, restart, switch or quit retires it under that `by=`
+instead of `by=end`, and its run file is written only then.
+
+Needs a decision on what the window does at that point: keep judging the
+open span against an extrapolated clock and make the terminal event wait
+for it, or close every open span when the mixer stops at the score's end
+and emit those `ended` lines before the terminal one. Either way the
+terminal `ended` must be the last event of a played-through score, and a
+test should cover a one-beat closing block.
+
+## `correctness-negative-offset-ends-judged-block-early-and-terminal`
+
+`Performance::closed` is `heard - offset > end + trail`, and the
+calibration offset is not range-restricted. With an offset more negative
+than minus the trail (a 300 bpm successor with the default window gives
+a 200 ms trail; a measured offset can approach the calibration block's
+300 ms window, and an edited calibration file can hold anything), a
+judged block closes before the heard clock reaches the next block. Its
+`ended` then precedes `started` of the next block, and if the mixer has
+not yet swapped segments `successor` yields no `next`, so the attacca
+`ended` is terminal and `wait` returns while the score is still playing.
+
+Candidates: do not let a span close before the raw heard clock has
+passed the block's end; bound the offset in `Calibration::load` and in
+calibration itself; or both. Which one is right depends on what a strongly
+negative offset should mean for judging, not only for the event stream.

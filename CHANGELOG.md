@@ -42,6 +42,14 @@ Notable changes to djembot. Format follows
   performance ends — `ended` fires, `wait` returns, the run file is
   written — up to a beat later than before, and a restart or stop within
   that beat is recorded as a restart or stop rather than a completed run.
+- **The instructor guide now says in what order `wait` reports a block
+  change.** `started` is printed when the music reaches a block; `ended`
+  when nothing is left to judge in it. So when a block with a part plays
+  straight into the next, `started` for the new block comes before
+  `ended` for the old one; after a block with no part it is the other way
+  round. The output itself is unchanged. The instructor guide is the
+  `CLAUDE.md` that `djembot init` writes, so only new learning
+  directories get the new text.
 
 ### Fixed
 

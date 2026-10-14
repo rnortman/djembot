@@ -57,7 +57,15 @@ and the user keeps as a git repository: `lessons/`, `JOURNAL.md`,
    then one line per event — `started label=B`, `ended label=A by=end
    next=B cycles=8/8 hit=29 miss=3 extra=1 run=PATH` — and returns once the
    performance is over: an `ended` with `by=end` and no `next` (the score
-   played to its end), `by=stop` or `by=enough`. When it returns, run
+   played to its end), `by=stop` or `by=enough`. `started` is printed
+   when the music reaches a block; `ended` when there is nothing left to
+   judge in it. A block without a part is done as the music leaves it, so
+   `ended label=A … next=B` comes before `started label=B`. A block with
+   a part still judges strokes past its end (at a boundary a stroke goes
+   to the block whose target it is nearest, see *Pedagogy*), so when it
+   plays through, `started label=B` comes first and `ended label=A by=end
+   next=B …` follows with the music already in B. Act on `run=` and
+   `by=`, not on the order. When it returns, run
    `djembot report RUN` for each `run=` it printed (a score writes one per
    block with a part). Record each `run=` the moment `wait` prints it
    (*Journal*, *During*): a later `wait` does not print it again.
