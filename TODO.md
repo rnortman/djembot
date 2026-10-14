@@ -19,44 +19,10 @@ the current `cycles` finish and moves on, otherwise it plays another
 how the user stands against it at least a cycle before the boundary.
 `wait` reports each repeat (`repeated label=X cycles=8`, or `ended …
 by=repeat`), and `report` shows the whole stay in the section, either
-as one run file with the cycle count grown or one per pass.
-
-## `feedback-mode`
-
-A way to show the score with no live feedback. `playhead: false` still
-draws every stroke's hit/miss/early/late mark on the grid and the
-necklace, and the user corrects off those marks instead of the sound;
-`hidden: true` hides the marks but also the score the user wants to
-read, and the header still counts hits, misses and extras live. So a
-`playhead: false` run is not an ear measurement, and there is no setting
-that gives one with the score on screen.
-
-Change: a block field `"feedback": "live"` (default: marks and counts as
-they happen), `"after"` (shown when the block ends or stops), `"none"`
-(never on screen; the report still has everything). `playhead` stays
-separate: playhead is "where am I", feedback is "how am I doing", and
-both independently on or off covers the cases (band-like: both off;
-learning the piece: playhead on; checking the ear: feedback after). The
-user's own strokes still sound unless `silent`. Keep `playhead: false`
-with live marks as a mode: it is a useful middle rung.
-
-## `cycle-countdown`
-
-A way for the user to learn to count cycles. With a score whose blocks
-differ, the user must know when the change is coming. The header's cycle
-counter (`3/8`) makes them subtract, and nothing says a change is near;
-neither can be hidden on its own.
-
-Change: a per-block setting for how the cycle count is shown, with
-levels a lesson steps through: `"cycle_count": "countdown"` ("3 to go …
-2 … last cycle", the last cycle in a large face: the crutch), `"count"`
-(today's `3/8`), `"none"` (the user counts). With `none`, the report
-should say whether the user was ready: with attacca into a block whose
-part changes, cycle 1 of the new block is the test. A lesson could also
-ask for a tap on a bound key at the last "one" of a block and judge it
-as a target, so counting can be practised before the score has a change
-in it. Interacts with `advance-on-threshold`: if a section can repeat,
-the countdown has to say so well ahead ("another 8").
+as one run file with the cycle count grown or one per pass. The
+standing line it adds is gated by the block's `feedback`, and
+`"cycle_count": "countdown"` counts down the current pass and reads
+`another 8` when the decision is to repeat.
 
 ## `runs-in-learning-dir`
 
@@ -98,26 +64,6 @@ the grid and necklace draw an extra where it was struck and are
 unaffected. Stated for the closing one only it is a special case of the
 annotation rule.
 
-## `correctness-judged-block-never-ends-when-score-ends-inside-its-trail`
-
-When a block with a part is followed attacca by a last block that ends
-before the first block's judged span closes (a one-beat closer, or a
-short fast tail after a wide window), the first block is never retired
-while the score plays. Once the mixer stops, the snapshot sits at the
-last block's end, not the first block's, so `judge_hits` has no
-reference clock for it and does not count it as finished; meanwhile
-`follow_score` emits the last block's terminal `ended`, and `wait`
-returns without the first block's `run=`. The performance stays open
-until a later stop, restart, switch or quit retires it under that `by=`
-instead of `by=end`, and its run file is written only then.
-
-Needs a decision on what the window does at that point: keep judging the
-open span against an extrapolated clock and make the terminal event wait
-for it, or close every open span when the mixer stops at the score's end
-and emit those `ended` lines before the terminal one. Either way the
-terminal `ended` must be the last event of a played-through score, and a
-test should cover a one-beat closing block.
-
 ## `correctness-negative-offset-ends-judged-block-early-and-terminal`
 
 `Performance::closed` is `heard - offset > end + trail`, and the
@@ -134,3 +80,17 @@ Candidates: do not let a span close before the raw heard clock has
 passed the block's end; bound the offset in `Calibration::load` and in
 calibration itself; or both. Which one is right depends on what a strongly
 negative offset should mean for judging, not only for the event stream.
+
+## `quality-needs-cycles-rule-split-across-modules`
+
+Two rules of one kind — a field value that needs `cycles`, because a
+looping block never ends — live in two places. `cycle_count:
+"countdown"` is checked in `Exercise::from_value`, so it holds for every
+exercise, including one deserialised from the socket; `next: "attacca"`
+is checked in `lesson::parse`, beside the lesson-level "but no block
+follows" rule, so an exercise built outside a lesson can carry it.
+Moving the attacca half into `from_value` beside the countdown check
+(one helper for both messages) makes `from_value` the whole
+single-exercise validator, but changes what an author sees for a last
+block with `next: "attacca"` and no `cycles`: the block fails to parse,
+so only the `needs cycles` error is reported, not both.

@@ -17,7 +17,7 @@ use crate::engine::{self, ClockSnapshot, Engine, Mono, Position, heard};
 use crate::input::{self, Arming, Hit, Part, Shared, Trigger, lock};
 use crate::ipc::{Event, EventKind, Pending, Request, Response};
 use crate::lesson::{self, Lesson, Segment};
-use crate::model::{Diagnostics, Exercise, MAX_VOICES, Next};
+use crate::model::{CycleCount, Diagnostics, Exercise, Feedback, MAX_VOICES, Next};
 use crate::perf::{
     self, Calibration, EndedBy, Mark, MarkKind, Neighbours, Performance, Run, Tally, Timing,
 };
@@ -394,20 +394,68 @@ pub enum Transport {
     Playing(Position),
 }
 
-/// `playing A · cycle 3/8`, `playing A · cycle 3 ∞`, `count-in A`,
-/// `paused A`, `armed A`, or `stopped`.
-pub fn transport_text(label: Option<&str>, cycles: Option<u32>, t: Transport) -> String {
+/// `playing A` followed by `cycle_text` (`playing A · cycle 3/8`,
+/// `playing A · 5 to go`, `playing A`), `count-in A`, `paused A`,
+/// `armed A`, or `stopped`.
+pub fn transport_text(
+    label: Option<&str>,
+    cycles: Option<u32>,
+    cycle_count: CycleCount,
+    t: Transport,
+) -> String {
     let label = label.unwrap_or("");
     match t {
         Transport::Stopped => "stopped".into(),
         Transport::Armed => format!("armed {label}"),
         Transport::Paused => format!("paused {label}"),
         Transport::CountIn => format!("count-in {label}"),
-        Transport::Playing(p) => match cycles {
-            Some(n) => format!("playing {label} · cycle {}/{n}", p.cycle + 1),
-            None => format!("playing {label} · cycle {} ∞", p.cycle + 1),
+        Transport::Playing(p) => match cycle_text(cycle_count, p.cycle, cycles) {
+            Some(c) => format!("playing {label} · {c}"),
+            None => format!("playing {label}"),
         },
     }
+}
+
+/// What both the status line and the header call a block's final cycle.
+const LAST_CYCLE: &str = "last cycle";
+
+/// Cycles after 0-based cycle `cycle` in a block of `cycles`.
+fn cycles_left(cycle: u32, cycles: u32) -> u32 {
+    cycles.saturating_sub(cycle + 1)
+}
+
+/// Where 0-based cycle `cycle` is, as `cycle_count` shows it: `cycle 3/8`
+/// or `cycle 3 ∞` (`Count`), `5 to go` then `last cycle` (`Countdown`), or
+/// nothing (`None`). `Countdown` without `cycles` reads as `Count`.
+pub fn cycle_text(cycle_count: CycleCount, cycle: u32, cycles: Option<u32>) -> Option<String> {
+    match (cycle_count, cycles) {
+        (CycleCount::None, _) => None,
+        (CycleCount::Countdown, Some(n)) => Some(match cycles_left(cycle, n) {
+            0 => LAST_CYCLE.into(),
+            left => format!("{left} to go"),
+        }),
+        (_, Some(n)) => Some(format!("cycle {}/{n}", cycle + 1)),
+        (_, None) => Some(format!("cycle {} ∞", cycle + 1)),
+    }
+}
+
+/// The header's cue on a `Countdown` block's last cycle: `last cycle`,
+/// with ` · then B` when `then` follows it attacca; `None` on any other
+/// cycle and under any other `cycle_count`.
+pub fn last_cycle_text(
+    cycle_count: CycleCount,
+    position: Option<Position>,
+    cycles: Option<u32>,
+    then: Option<&str>,
+) -> Option<String> {
+    if cycle_count != CycleCount::Countdown {
+        return None;
+    }
+    let p = position?;
+    (cycles_left(p.cycle, cycles?) == 0).then(|| match then {
+        Some(b) => format!("{LAST_CYCLE} · then {b}"),
+        None => LAST_CYCLE.into(),
+    })
 }
 
 /// The lesson on screen.
@@ -465,6 +513,13 @@ fn is_terminal(by: EndedBy, next: &Option<String>) -> bool {
         EndedBy::End => next.is_none(),
         _ => false,
     }
+}
+
+/// Whether a judged span ending at `end` has finished on `s`: the mixer has
+/// stopped at that end, or at `score_end`, the end of the whole score. A
+/// span whose trail outlasts the score is finished at the score's end.
+fn span_finished(s: &ClockSnapshot, end: Option<u64>, score_end: Option<u64>) -> bool {
+    engine::finished(s, 0, end) || engine::finished(s, 0, score_end)
 }
 
 /// One block of the loaded score and the mixer frame its timeline begins
@@ -632,8 +687,9 @@ impl<S> App<S> {
     /// have passed by `now`. First opens the performance of the next link
     /// of the score once its judged span has begun. Strokes are judged
     /// against the latest snapshot of the score while it plays, and against
-    /// the last playing one once a finite block has finished; otherwise (no
-    /// performance, not yet started, paused, stopped) they are dropped. Each
+    /// the last playing one once a finite block, or the score, has finished
+    /// at its end; otherwise (no performance, not yet started, paused,
+    /// stopped) they are dropped. Each
     /// stroke goes to one open performance whose block binds its key, as
     /// `route` picks it. A performance closes once the heard clock passes
     /// its judged span. A calibration with enough hits is
@@ -655,9 +711,10 @@ impl<S> App<S> {
         }
         self.open_ahead(now);
         let snap = self.engine.since(self.mark);
+        let score_end = self.score_end();
         let mut refs = Vec::with_capacity(self.live.len());
         for live in &mut self.live {
-            let finished = snap.is_some_and(|s| engine::finished(&s, 0, live.perf.end()));
+            let finished = snap.is_some_and(|s| span_finished(&s, live.perf.end(), score_end));
             let reference = match snap {
                 Some(s) if s.playing => {
                     live.last_playing = Some(s);
@@ -682,7 +739,6 @@ impl<S> App<S> {
                     }
                 }
                 None if *finished => ended.push(i),
-                // TODO(correctness-judged-block-never-ends-when-score-ends-inside-its-trail)
                 None => {}
             }
         }
@@ -1067,11 +1123,20 @@ impl<S> App<S> {
     /// Whether a performance is open on a score the mixer has finished:
     /// the stretch after its end in which late strokes still count.
     fn post_end(&self) -> bool {
+        let score_end = self.score_end();
         self.engine.since(self.mark).is_some_and(|s| {
             self.live
                 .iter()
-                .any(|live| engine::finished(&s, 0, live.perf.end()))
+                .any(|live| span_finished(&s, live.perf.end(), score_end))
         })
+    }
+
+    /// The mixer frame the loaded score ends at: the last link's end.
+    /// `None` when the last block loops or nothing is loaded.
+    fn score_end(&self) -> Option<u64> {
+        self.chain
+            .last()
+            .and_then(|l| l.tl.end.map(|e| l.origin + e))
     }
 
     /// Acts on every live request and answers it.
@@ -1377,7 +1442,9 @@ impl<S> App<S> {
     /// once the mixer has swapped to the last link queued, queues the one
     /// after it with its block's current mutes; once the heard clock passes
     /// a link's origin, makes that link's block active and selected, scrolls
-    /// to it and rearms the hub.
+    /// to it and rearms the hub. Once the mixer has stopped at the playing
+    /// block's end, ends that block `by=end` when no performance is still
+    /// open, so its `ended` follows every judged span's.
     fn follow_score(&mut self, now: Mono) {
         // A swap returns a timeline without a command to drain it.
         self.engine.drain_returned();
@@ -1404,7 +1471,10 @@ impl<S> App<S> {
                     .find(|l| l.block == b)
                     .is_some_and(|l| engine::finished(&snap, l.origin, l.tl.end))
             });
-            if ended && let Some(event) = self.end_block(EndedBy::End, None) {
+            if ended
+                && self.live.is_empty()
+                && let Some(event) = self.end_block(EndedBy::End, None)
+            {
                 self.emit(event);
             }
             return;
@@ -1449,6 +1519,7 @@ impl<S> App<S> {
         transport_text(
             ex.map(|e| e.label.as_str()),
             ex.and_then(|e| e.cycles),
+            ex.map_or(CycleCount::Count, |e| e.cycle_count),
             self.transport_at(now),
         )
     }
@@ -1652,8 +1723,16 @@ impl<S> App<S> {
             let perfs = self
                 .live
                 .iter()
-                .map(|l| (l.block, &l.perf))
-                .chain(self.closed.iter().map(|(b, p)| (*b, p)))
+                .map(|l| Shown {
+                    block: l.block,
+                    perf: &l.perf,
+                    closed: false,
+                })
+                .chain(self.closed.iter().map(|(b, p)| Shown {
+                    block: *b,
+                    perf: p,
+                    closed: true,
+                }))
                 .collect();
             let view = BlockView {
                 perfs,
@@ -1801,11 +1880,18 @@ enum Action {
     Mute(usize, usize),
 }
 
+/// A performance the window may draw, on its block.
+struct Shown<'a> {
+    block: usize,
+    perf: &'a Performance,
+    /// Whether it has retired.
+    closed: bool,
+}
+
 /// The transport as every block sees it this frame.
 struct BlockView<'a> {
-    /// The open performances, then the closed ones still drawn, each with
-    /// its block.
-    perfs: Vec<(usize, &'a Performance)>,
+    /// The open performances, then the closed ones still drawn.
+    perfs: Vec<Shown<'a>>,
     /// The block waiting for `space`.
     armed: Option<usize>,
     active: Option<usize>,
@@ -1839,11 +1925,18 @@ fn rhythm_block(
     view: &BlockView,
     actions: &mut Vec<Action>,
 ) -> egui::Response {
+    // The block's open performance while there is one, else its retired
+    // one; the block's `feedback` decides whether its judgments are drawn.
     let perf = view
         .perfs
         .iter()
-        .find(|(b, _)| *b == block)
-        .map(|&(_, p)| p);
+        .find(|s| s.block == block)
+        .filter(|s| match ex.feedback {
+            Feedback::Live => true,
+            Feedback::After => s.closed,
+            Feedback::None => false,
+        })
+        .map(|s| s.perf);
     let muted = &state.muted;
     let is_active = view.active == Some(block);
     let is_selected = view.selected == block;
@@ -1879,6 +1972,11 @@ fn rhythm_block(
                     ui.label(RichText::new(ARMED_TEXT).strong().size(16.0));
                 } else if sounding && let Some(beat) = view.count_in {
                     ui.label(RichText::new(count_in_text(beat)).strong().size(16.0));
+                } else if sounding
+                    && let Some(text) =
+                        last_cycle_text(ex.cycle_count, view.position, ex.cycles, then)
+                {
+                    ui.label(RichText::new(text).strong().size(16.0));
                 }
             });
             let rows = ex.voices.len() as f32;
@@ -3088,22 +3186,52 @@ mod tests {
             frac: 0.5,
         };
         assert_eq!(
-            transport_text(Some("A"), Some(8), Transport::Playing(p)),
+            transport_text(Some("A"), Some(8), CycleCount::Count, Transport::Playing(p)),
             "playing A · cycle 3/8"
         );
         assert_eq!(
-            transport_text(Some("A"), None, Transport::Playing(p)),
+            transport_text(Some("A"), None, CycleCount::Count, Transport::Playing(p)),
             "playing A · cycle 3 ∞"
         );
-        assert_eq!(transport_text(None, None, Transport::Stopped), "stopped");
         assert_eq!(
-            transport_text(Some("B"), None, Transport::Paused),
+            transport_text(None, None, CycleCount::Count, Transport::Stopped),
+            "stopped"
+        );
+        assert_eq!(
+            transport_text(Some("B"), None, CycleCount::Count, Transport::Paused),
             "paused B"
         );
         assert_eq!(
-            transport_text(Some("B"), None, Transport::CountIn),
+            transport_text(Some("B"), None, CycleCount::Count, Transport::CountIn),
             "count-in B"
         );
+        let p = Position {
+            cycle: 1,
+            frac: 0.5,
+        };
+        assert_eq!(
+            transport_text(Some("A"), Some(3), CycleCount::None, Transport::Playing(p)),
+            "playing A"
+        );
+        assert_eq!(
+            transport_text(
+                Some("A"),
+                Some(3),
+                CycleCount::Countdown,
+                Transport::Playing(p)
+            ),
+            "playing A · 1 to go"
+        );
+        for cc in [CycleCount::Countdown, CycleCount::None] {
+            assert_eq!(
+                transport_text(Some("A"), Some(3), cc, Transport::Paused),
+                "paused A"
+            );
+            assert_eq!(
+                transport_text(Some("A"), Some(3), cc, Transport::CountIn),
+                "count-in A"
+            );
+        }
     }
 
     const RATE: f64 = 48_000.0;
@@ -3699,32 +3827,8 @@ mod tests {
 
     #[test]
     fn every_kind_of_mark_is_drawn_on_grid_and_necklace_in_its_color() {
-        let (mut app, mut cb, hit_tx, _tx) = app_with(Store::default());
+        let (mut app, ..) = mark_script("live");
         let ctx = egui::Context::default();
-        let ex = exercise(json!({
-            "label": "M", "tempo": 120, "beats": 4, "window_ms": 100,
-            "voices": [{ "name": "clave", "instrument": "clave", "pulses": 16,
-                         "onsets": [0, 4, 8, 12], "keys": "f" }]
-        }));
-        app.handle(Request::Show {
-            path: "/l/m.md".into(),
-            lesson: Lesson {
-                segments: vec![Segment::Rhythm(ex)],
-            },
-            play: None,
-        });
-        app.resume(0).unwrap();
-        let mut sim = Sim::new(0);
-        let f = part_f(&app);
-        // Pulse 0 missed, 4 on time, 8 late, 12 missed, an extra between
-        // them, and pulse 0 of the next cycle 50 ms early.
-        let mut strokes = vec![
-            (sim.at(0.505), f.clone()),
-            (sim.at(1.035), f.clone()),
-            (sim.at(1.25), f.clone()),
-            (sim.at(1.95), f.clone()),
-        ];
-        sim.run(&mut app, &mut cb, sim.at(1.96), &mut strokes, &hit_tx);
         let out = press(&mut app, &ctx, &[]);
         assert_eq!(dots(&out, ON_COLOR), 2);
         assert_eq!(dots(&out, LATE_COLOR), 2);
@@ -4066,6 +4170,622 @@ mod tests {
         let (lines_off, circles_off, marks_off) = draw(false);
         assert_eq!((lines_off, marks_off), (0, 2), "no playhead; marks kept");
         assert_eq!(circles - circles_off, 2, "the lit pulse-0 halos");
+    }
+
+    #[test]
+    fn cycle_text_at_every_cycle() {
+        for n in [1, 2, 8] {
+            for k in 0..n {
+                let count = format!("cycle {}/{n}", k + 1);
+                assert_eq!(
+                    cycle_text(CycleCount::Count, k, Some(n)).as_deref(),
+                    Some(count.as_str())
+                );
+                let down = if k + 1 == n {
+                    "last cycle".to_string()
+                } else {
+                    format!("{} to go", n - 1 - k)
+                };
+                assert_eq!(
+                    cycle_text(CycleCount::Countdown, k, Some(n)).as_deref(),
+                    Some(down.as_str())
+                );
+                assert_eq!(cycle_text(CycleCount::None, k, Some(n)), None);
+            }
+        }
+        assert_eq!(
+            cycle_text(CycleCount::Count, 2, None).as_deref(),
+            Some("cycle 3 ∞")
+        );
+        assert_eq!(cycle_text(CycleCount::None, 2, None), None);
+        assert_eq!(
+            cycle_text(CycleCount::Countdown, 2, None),
+            cycle_text(CycleCount::Count, 2, None),
+            "countdown without cycles reads as count"
+        );
+    }
+
+    #[test]
+    fn last_cycle_text_only_on_the_last_cycle() {
+        let at = |cycle| Some(Position { cycle, frac: 0.5 });
+        assert_eq!(
+            last_cycle_text(CycleCount::Countdown, at(1), Some(3), Some("B")),
+            None
+        );
+        assert_eq!(
+            last_cycle_text(CycleCount::Countdown, at(2), Some(3), Some("B")).as_deref(),
+            Some("last cycle · then B")
+        );
+        assert_eq!(
+            last_cycle_text(CycleCount::Countdown, at(0), Some(1), None).as_deref(),
+            Some("last cycle")
+        );
+        assert_eq!(
+            last_cycle_text(CycleCount::Countdown, None, Some(3), None),
+            None
+        );
+        assert_eq!(
+            last_cycle_text(CycleCount::Countdown, at(0), None, None),
+            None
+        );
+        for mode in [CycleCount::Count, CycleCount::None] {
+            assert_eq!(last_cycle_text(mode, at(2), Some(3), Some("B")), None);
+        }
+    }
+
+    /// `A`: `cycles` cycles at 120 bpm (96 000 frames each), no count-in,
+    /// no playhead, a click, the given `cycle_count`, attacca into `B` when
+    /// `attacca`; `B`: one cycle of click.
+    fn countdown_lesson(cycles: u32, cycle_count: &str, attacca: bool) -> Request {
+        let block = |label: &str, cycles: u32, extra: Value| {
+            let mut v = json!({
+                "label": label, "tempo": 120, "beats": 4, "cycles": cycles,
+                "voices": [{ "name": "click", "instrument": "click", "pulses": 4,
+                             "onsets": [0, 1, 2, 3] }]
+            });
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            exercise(v)
+        };
+        let mut a = json!({ "playhead": false, "cycle_count": cycle_count });
+        if attacca {
+            a["next"] = "attacca".into();
+        }
+        Request::Show {
+            path: "/l/countdown.md".into(),
+            lesson: Lesson {
+                segments: vec![
+                    Segment::Rhythm(block("A", cycles, a)),
+                    Segment::Rhythm(block("B", 1, json!({}))),
+                ],
+            },
+            play: None,
+        }
+    }
+
+    /// A window started on `countdown_lesson(cycles, cycle_count, attacca)`.
+    fn countdown_app(
+        cycles: u32,
+        cycle_count: &str,
+        attacca: bool,
+    ) -> (App<()>, Callback, mpsc::Sender<Pending>) {
+        let (mut app, cb, tx) = app();
+        app.handle(countdown_lesson(cycles, cycle_count, attacca));
+        app.start(0).unwrap();
+        (app, cb, tx)
+    }
+
+    /// Runs the callback on the wall clock until its frame reaches `frame`,
+    /// following the score.
+    fn play_to(app: &mut App<()>, cb: &mut Callback, frame: u64) {
+        while app.engine.clock().frame < frame {
+            cb.tick();
+            app.follow_score(Mono::now());
+        }
+    }
+
+    /// The middle of 0-based cycle `k` of a 96 000-frame cycle.
+    fn mid_cycle(k: u64) -> u64 {
+        k * 96_000 + 48_000
+    }
+
+    #[test]
+    fn countdown_status_and_face_walk_a_block() {
+        let (mut app, mut cb, _tx) = countdown_app(3, "countdown", true);
+        let ctx = egui::Context::default();
+        let text = ctx.global_style().visuals.text_color();
+        for (k, status, face) in [
+            (0, "playing A · 2 to go", 0),
+            (1, "playing A · 1 to go", 0),
+            (2, "playing A · last cycle", 1),
+        ] {
+            play_to(&mut app, &mut cb, mid_cycle(k));
+            let out = press(&mut app, &ctx, &[]);
+            assert_eq!(texts(&out, status), 1, "cycle {k}");
+            assert_eq!(texts(&out, "last cycle · then B"), face, "cycle {k}");
+            assert_eq!(segments(&out, text), 0, "no playhead on A");
+        }
+        play_to(&mut app, &mut cb, mid_cycle(3));
+        assert_eq!(app.active_block(), Some(1));
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(texts(&out, "playing B · cycle 1/1"), 1);
+        assert_eq!(texts(&out, "last cycle · then B"), 0, "off on B");
+        assert_eq!(texts(&out, "last cycle"), 0, "B counts");
+
+        // Without a successor, the face is `last cycle` alone.
+        let (mut app, mut cb, _tx) = countdown_app(2, "countdown", false);
+        play_to(&mut app, &mut cb, mid_cycle(0));
+        assert_eq!(texts(&press(&mut app, &ctx, &[]), "last cycle"), 0);
+        play_to(&mut app, &mut cb, mid_cycle(1));
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(texts(&out, "last cycle"), 1);
+        assert_eq!(texts(&out, "playing A · last cycle"), 1);
+
+        // A one-cycle block is on its last cycle from the first beat.
+        let (mut app, mut cb, _tx) = countdown_app(1, "countdown", false);
+        play_to(&mut app, &mut cb, 4_800);
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(texts(&out, "playing A · last cycle"), 1);
+        assert_eq!(texts(&out, "last cycle"), 1);
+    }
+
+    #[test]
+    fn countdown_face_is_off_while_paused() {
+        let (mut app, mut cb, _tx) = countdown_app(2, "countdown", false);
+        let ctx = egui::Context::default();
+        play_to(&mut app, &mut cb, mid_cycle(1));
+        assert_eq!(texts(&press(&mut app, &ctx, &[]), "last cycle"), 1);
+        app.engine.pause().unwrap();
+        cb.tick();
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(texts(&out, "last cycle"), 0);
+        assert_eq!(texts(&out, "paused A"), 1);
+        app.resume(0).unwrap();
+        cb.tick();
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(texts(&out, "last cycle"), 1);
+        assert_eq!(texts(&out, "playing A · last cycle"), 1);
+    }
+
+    #[test]
+    fn countdown_face_waits_out_the_count_in() {
+        let Request::Show {
+            path,
+            mut lesson,
+            play,
+        } = countdown_lesson(1, "countdown", false)
+        else {
+            unreachable!()
+        };
+        if let Segment::Rhythm(a) = &mut lesson.segments[0] {
+            a.count_in = 4;
+        }
+        let (mut app, mut cb, _tx) = app();
+        app.handle(Request::Show { path, lesson, play });
+        app.start(0).unwrap();
+        let ctx = egui::Context::default();
+        // The first count-in beat, then the first beat of the one cycle.
+        play_to(&mut app, &mut cb, 4_800);
+        let count_in = press(&mut app, &ctx, &[]);
+        assert_eq!(texts(&count_in, "count-in A"), 1);
+        assert_eq!(texts(&count_in, "last cycle"), 0);
+        play_to(&mut app, &mut cb, 96_000 + 4_800);
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(texts(&out, "playing A · last cycle"), 1);
+        assert_eq!(texts(&out, "last cycle"), 1);
+        assert_eq!(
+            texts(&count_in, "1"),
+            texts(&out, "1") + 1,
+            "the count-in's first beat, gone on the cycle"
+        );
+    }
+
+    #[test]
+    fn cycle_count_none_drops_the_suffix() {
+        let (mut app, mut cb, _tx) = countdown_app(3, "none", true);
+        let ctx = egui::Context::default();
+        play_to(&mut app, &mut cb, mid_cycle(0));
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(texts(&out, "playing A"), 1);
+        assert_eq!(texts(&out, "120 bpm · 4 beats · 3 cycles · then B"), 1);
+        let rx = subscribe(&mut app);
+        assert_eq!(lines(&rx), ["playing label=A cycle=1/3"]);
+        play_to(&mut app, &mut cb, mid_cycle(2));
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(texts(&out, "playing A"), 1);
+        assert_eq!(texts(&out, "last cycle · then B"), 0, "no face");
+    }
+
+    /// `req` with every block's `feedback` set to `feedback`.
+    fn with_feedback(req: Request, feedback: Feedback) -> Request {
+        let Request::Show {
+            path,
+            mut lesson,
+            play,
+        } = req
+        else {
+            unreachable!()
+        };
+        for s in &mut lesson.segments {
+            if let Segment::Rhythm(ex) = s {
+                ex.feedback = feedback;
+            }
+        }
+        Request::Show { path, lesson, play }
+    }
+
+    /// The header tallies drawn.
+    fn tallies(out: &egui::FullOutput) -> usize {
+        out.shapes
+            .iter()
+            .filter(
+                |c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text().starts_with("hit ")),
+            )
+            .count()
+    }
+
+    /// The judgment marks drawn, of every kind, on grid and necklace.
+    fn marks(out: &egui::FullOutput) -> [usize; 5] {
+        [
+            dots(out, ON_COLOR),
+            dots(out, LATE_COLOR),
+            dots(out, EARLY_COLOR),
+            rings(out, WRONG_COLOR),
+            segments(out, WRONG_COLOR),
+        ]
+    }
+
+    /// A looping block `M` under `feedback`, played through one cycle and
+    /// the next downbeat: a hit, a late hit, an early hit, two misses and
+    /// an extra.
+    fn mark_script(feedback: &str) -> TestApp {
+        let (mut app, mut cb, hit_tx, tx) = app_with(Store::default());
+        let ex = exercise(json!({
+            "label": "M", "tempo": 120, "beats": 4, "window_ms": 100, "feedback": feedback,
+            "voices": [{ "name": "clave", "instrument": "clave", "pulses": 16,
+                         "onsets": [0, 4, 8, 12], "keys": "f" }]
+        }));
+        app.handle(Request::Show {
+            path: "/l/m.md".into(),
+            lesson: Lesson {
+                segments: vec![Segment::Rhythm(ex)],
+            },
+            play: None,
+        });
+        app.resume(0).unwrap();
+        let mut sim = Sim::new(0);
+        let f = part_f(&app);
+        // Pulse 0 missed, 4 on time, 8 late, 12 missed, an extra between
+        // them, and pulse 0 of the next cycle 50 ms early.
+        let mut strokes = vec![
+            (sim.at(0.505), f.clone()),
+            (sim.at(1.035), f.clone()),
+            (sim.at(1.25), f.clone()),
+            (sim.at(1.95), f),
+        ];
+        sim.run(&mut app, &mut cb, sim.at(1.96), &mut strokes, &hit_tx);
+        (app, cb, hit_tx, tx)
+    }
+
+    #[test]
+    fn feedback_does_not_change_judging_sound_or_events() {
+        let observe = |feedback| {
+            let (mut app, ..) = mark_script(feedback);
+            assert!(part_f(&app).buf.is_some(), "the user's strokes sound");
+            let open = app.live.last().unwrap().perf.run(EndedBy::Open);
+            let report = app.handle(Request::Report).run.unwrap();
+            let rx = subscribe(&mut app);
+            app.handle(Request::Stop);
+            let ended = lines(&rx).iter().filter(|l| l.starts_with("ended")).count();
+            let run = app.last_run.clone().unwrap();
+            (
+                (open.hits, open.misses),
+                (report.hits, report.misses),
+                ended,
+                (run.hits, run.misses, run.cycles_played),
+            )
+        };
+        let live = observe("live");
+        assert_eq!(live.0.0.len(), 4, "four strokes judged");
+        assert_eq!(live.2, 1);
+        assert_eq!(observe("after"), live);
+        assert_eq!(observe("none"), live);
+    }
+
+    #[test]
+    fn feedback_none_draws_no_marks_or_tally() {
+        let ctx = egui::Context::default();
+        let (mut app, ..) = mark_script("live");
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(marks(&out), [2, 2, 2, 4, 4]);
+        assert_eq!(tallies(&out), 1);
+
+        let (mut app, mut cb, ..) = mark_script("none");
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(marks(&out), [0; 5]);
+        assert_eq!(tallies(&out), 0);
+        cb.tick();
+        let out = press(&mut app, &ctx, &[]);
+        let text = ctx.global_style().visuals.text_color();
+        assert_eq!(segments(&out, text), 2, "the playhead line and hand stay");
+        app.stop().unwrap();
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!((marks(&out), tallies(&out)), ([0; 5], 0), "after stop");
+        press(&mut app, &ctx, &[Key::H]);
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(texts(&out, "hidden · press h to reveal"), 1);
+        assert_eq!(tallies(&out), 0, "the hidden header has no tally");
+
+        // The count-in is drawn under `none`.
+        let (mut app, mut cb, _tx) = super::tests::app();
+        let ex = exercise(json!({
+            "label": "C", "tempo": 120, "beats": 4, "count_in": 4, "feedback": "none",
+            "voices": [{ "name": "clave", "instrument": "clave", "pulses": 4,
+                         "onsets": [0], "keys": "f" }]
+        }));
+        app.handle(Request::Show {
+            path: "/l/c.md".into(),
+            lesson: Lesson {
+                segments: vec![Segment::Rhythm(ex)],
+            },
+            play: None,
+        });
+        let before = texts(&press(&mut app, &ctx, &[]), "1");
+        app.resume(0).unwrap();
+        cb.tick();
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(texts(&out, "1"), before + 1, "the count-in's first beat");
+    }
+
+    /// `perf_lesson` under `feedback`, `P` started, a hit on its pulse 0.
+    fn after_script(feedback: Feedback) -> (TestApp, Sim) {
+        let (mut app, mut cb, hit_tx, tx) = app_with(Store::default());
+        app.handle(with_feedback(perf_lesson("/l/p.md"), feedback));
+        app.resume(0).unwrap();
+        let mut sim = Sim::new(0);
+        let mut strokes = vec![(sim.at(0.010), part_f(&app))];
+        sim.run(&mut app, &mut cb, sim.at(1.0), &mut strokes, &hit_tx);
+        ((app, cb, hit_tx, tx), sim)
+    }
+
+    #[test]
+    fn feedback_after_reveals_at_retire() {
+        let ctx = egui::Context::default();
+        // What `live` leaves on screen once P has ended.
+        let ((mut app, mut cb, hit_tx, _tx), mut sim) = after_script(Feedback::Live);
+        sim.run(&mut app, &mut cb, sim.at(2.6), &mut vec![], &hit_tx);
+        let out = press(&mut app, &ctx, &[]);
+        let live = (marks(&out), tallies(&out));
+        assert_eq!(live, ([2, 0, 0, 4, 0], 1), "a hit and two misses");
+        let tally = "hit 1 · miss 2 · extra 0 · mean +10 ms";
+        assert_eq!(texts(&out, tally), 1);
+
+        let ((mut app, mut cb, hit_tx, _tx), mut sim) = after_script(Feedback::After);
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!((marks(&out), tallies(&out)), ([0; 5], 0), "open");
+        app.engine.pause().unwrap();
+        cb.tick_at(sim.at(sim.k as f64 * TICK), sim.latency);
+        sim.k += 1;
+        assert_eq!(app.live.len(), 1, "a pause closes nothing");
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!((marks(&out), tallies(&out)), ([0; 5], 0), "paused");
+        app.resume(0).unwrap();
+        // Past the end, inside the judged span's trail.
+        sim.run(&mut app, &mut cb, sim.at(2.2), &mut vec![], &hit_tx);
+        assert_eq!(app.live.len(), 1, "the trail is open");
+        assert!(!app.playing(), "the music has ended");
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!((marks(&out), tallies(&out)), ([0; 5], 0), "trail");
+        sim.run(&mut app, &mut cb, sim.at(2.7), &mut vec![], &hit_tx);
+        assert!(app.live.is_empty());
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!((marks(&out), tallies(&out)), live, "revealed as live");
+        assert_eq!(texts(&out, tally), 1);
+
+        app.resume(0).unwrap();
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!((marks(&out), tallies(&out)), ([0; 5], 0), "restart");
+        app.stop().unwrap();
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(tallies(&out), 1, "the stopped attempt");
+        app.handle(with_feedback(perf_lesson("/l/p.md"), Feedback::After));
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(tallies(&out), 0, "show clears it");
+    }
+
+    #[test]
+    fn feedback_after_after_stop() {
+        let ctx = egui::Context::default();
+        let tally = "hit 1 · miss 0 · extra 0 · mean +10 ms";
+
+        let ((mut app, ..), _) = after_script(Feedback::After);
+        assert_eq!(tallies(&press(&mut app, &ctx, &[])), 0);
+        app.handle(Request::Stop);
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(texts(&out, tally), 1, "stop reveals at once");
+        assert_eq!(dots(&out, ON_COLOR), 2);
+
+        let ((mut app, ..), _) = after_script(Feedback::After);
+        let r = app.handle(Request::Play {
+            label: Some("Q".into()),
+        });
+        assert_eq!(r.armed.as_deref(), Some("Q"));
+        for frame in 0..2 {
+            let out = press(&mut app, &ctx, &[]);
+            assert_eq!(texts(&out, tally), 1, "arm reveals, frame {frame}");
+            assert_eq!(dots(&out, ON_COLOR), 2);
+        }
+
+        let restarted = |feedback| {
+            let ((mut app, ..), _) = after_script(feedback);
+            press(&mut app, &ctx, &[Key::R]);
+            assert_eq!(ended_by(&app), Some(EndedBy::Restart));
+            let out = press(&mut app, &ctx, &[]);
+            let run = app.last_run.clone().unwrap();
+            ((marks(&out), tallies(&out)), (run.hits, run.misses))
+        };
+        let (screen, run) = restarted(Feedback::After);
+        assert_eq!(screen, ([0; 5], 0), "a restart discards the screen");
+        let (live_screen, live_run) = restarted(Feedback::Live);
+        assert_eq!(live_screen.1, 1, "live shows the new attempt's tally");
+        assert_eq!(run, live_run, "the run keeps the attempt");
+        assert_eq!(run.0.len(), 1);
+    }
+
+    #[test]
+    fn feedback_after_across_an_attacca_boundary() {
+        let ctx = egui::Context::default();
+        let (mut app, mut cb, hit_tx, _tx) = app_with(Store::default());
+        app.handle(with_feedback(part_score(&[0, 6, 15], "f"), Feedback::After));
+        app.start(0).unwrap();
+        let part = part_f(&app);
+        let mut sim = Sim::new(BOUNDARY_LATENCY_MS);
+        // A hit on guided's last cycle, and one on alone's first target.
+        let mut strokes = [192_500.0, ORIGIN_B + 500.0]
+            .iter()
+            .map(|&f| (sim.wall(f), part.clone()))
+            .collect();
+        sim.run(
+            &mut app,
+            &mut cb,
+            sim.wall(ORIGIN_B + 48_000.0),
+            &mut strokes,
+            &hit_tx,
+        );
+        assert_eq!(app.live.iter().map(|l| l.block).collect::<Vec<_>>(), [1]);
+        assert_eq!(app.closed.iter().map(|c| c.0).collect::<Vec<_>>(), [0]);
+        let guided = performance_text(&app.closed[0].1);
+        assert!(guided.starts_with("hit 1 · miss 5"), "{guided}");
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(tallies(&out), 1, "guided's alone");
+        assert_eq!(texts(&out, &guided), 1);
+        assert_eq!(dots(&out, ON_COLOR), 2, "guided's hit, not alone's");
+        assert_eq!(
+            rings(&out, WRONG_COLOR),
+            4,
+            "guided's two misses of its last cycle, not alone's"
+        );
+    }
+
+    /// `A`, one cycle of a clave on 0 and 15 struck on `f` under `after`,
+    /// attacca into `B`, a one-beat closer without a part: `A`'s trail is
+    /// `B`'s beat, so the score stops at `A`'s end plus its trail.
+    fn closer_lesson() -> Request {
+        let a = exercise(json!({
+            "label": "A", "tempo": 120, "beats": 4, "cycles": 1, "window_ms": 100,
+            "next": "attacca", "feedback": "after",
+            "voices": [{ "name": "clave", "instrument": "clave", "pulses": 16,
+                         "onsets": [0, 15], "keys": "f" }]
+        }));
+        let b = exercise(json!({
+            "label": "B", "tempo": 120, "beats": 1, "cycles": 1,
+            "voices": [{ "name": "bell", "instrument": "bell", "pulses": 1,
+                         "onsets": [0] }]
+        }));
+        Request::Show {
+            path: "/l/closer.md".into(),
+            lesson: Lesson {
+                segments: vec![Segment::Rhythm(a), Segment::Rhythm(b)],
+            },
+            play: None,
+        }
+    }
+
+    #[test]
+    fn a_block_whose_trail_outlasts_the_score_ends_after_it() {
+        let ctx = egui::Context::default();
+        let (mut app, mut cb, hit_tx, _tx) = app_with(Store::default());
+        app.handle(closer_lesson());
+        app.start(0).unwrap();
+        let rx = subscribe(&mut app);
+        let _ = lines(&rx);
+        let mut sim = Sim::new(200);
+        let mut strokes = vec![(sim.wall(10.0), part_f(&app))];
+        sim.run(
+            &mut app,
+            &mut cb,
+            sim.wall(119_000.0),
+            &mut strokes,
+            &hit_tx,
+        );
+        assert_eq!(app.live.len(), 1, "A's trail is open");
+        assert!(app.post_end() && app.animating(), "still repainting");
+        assert_eq!(tallies(&press(&mut app, &ctx, &[])), 0);
+        sim.run(&mut app, &mut cb, sim.wall(125_000.0), &mut vec![], &hit_tx);
+        assert!(!app.playing(), "the score has ended");
+        assert!(app.live.is_empty(), "A closed after its trail");
+        assert!(!app.animating(), "nothing left to repaint for");
+        let run = app.last_run.as_ref().unwrap();
+        assert_eq!((run.label.as_str(), run.ended_by), ("A", EndedBy::End));
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(texts(&out, "hit 1 · miss 1 · extra 0 · mean +0 ms"), 1);
+        assert_eq!(
+            lines(&rx),
+            [
+                "started label=B",
+                "ended label=A by=end next=B cycles=1/1 hit=1 miss=1 extra=0",
+                "ended label=B by=end cycles=1/1 !",
+            ]
+        );
+        let waiting = app.subscribers.len();
+        assert_eq!(
+            lines(&subscribe(&mut app)),
+            ["ended label=B by=end cycles=1/1 !"]
+        );
+        assert_eq!(
+            app.subscribers.len(),
+            waiting,
+            "a late wait returns at once"
+        );
+    }
+
+    #[test]
+    fn stopping_inside_a_stranded_trail_ends_both_blocks_by_stop() {
+        let (mut app, mut cb, hit_tx, _tx) = app_with(Store::default());
+        app.handle(closer_lesson());
+        app.start(0).unwrap();
+        let rx = subscribe(&mut app);
+        let _ = lines(&rx);
+        let mut sim = Sim::new(200);
+        let mut strokes = vec![(sim.wall(10.0), part_f(&app))];
+        sim.run(
+            &mut app,
+            &mut cb,
+            sim.wall(119_000.0),
+            &mut strokes,
+            &hit_tx,
+        );
+        assert!(!app.playing(), "the score has stopped");
+        assert_eq!(app.live.len(), 1, "A's trail is open");
+        app.stop().unwrap();
+        assert_eq!(
+            lines(&rx),
+            [
+                "started label=B",
+                "ended label=A by=stop cycles=1/1 hit=1 miss=1 extra=0",
+                "ended label=B by=stop cycles=1/1 !",
+            ]
+        );
+    }
+
+    #[test]
+    fn feedback_is_inert_on_a_block_without_a_part() {
+        let ctx = egui::Context::default();
+        let shapes = |feedback| {
+            let (mut app, mut cb, _tx) = app();
+            app.handle(with_feedback(perf_lesson("/l/p.md"), feedback));
+            app.resume(2).unwrap();
+            cb.tick();
+            assert!(app.playing());
+            assert!(app.live.is_empty(), "N has no part");
+            let playing = press(&mut app, &ctx, &[]).shapes.len();
+            app.stop().unwrap();
+            (playing, press(&mut app, &ctx, &[]).shapes.len())
+        };
+        let live = shapes(Feedback::Live);
+        assert_eq!(shapes(Feedback::After), live, "the same frames as live");
+        assert_eq!(shapes(Feedback::None), live, "the same frames as live");
     }
 
     #[test]
@@ -4888,6 +5608,9 @@ mod tests {
         calibrate(&mut app, &mut cb, &hit_tx, [1, 2, 4], 6);
         let perf = &app.live.last().unwrap().perf;
         assert_eq!(performance_text(perf), "taps 3/24 · median +10 ms");
+        let ctx = egui::Context::default();
+        let out = press(&mut app, &ctx, &[]);
+        assert_eq!(texts(&out, "taps 3/24 · median +10 ms"), 1, "drawn live");
         app.handle(Request::Stop);
         let closed = &app.closed.last().unwrap().1;
         assert_eq!(performance_text(closed), "taps 3/24 · median +10 ms");

@@ -143,6 +143,7 @@ pub fn parse(text: &str, dir: &Path, diag: &mut Diagnostics) -> Option<Lesson> {
                         ));
                     }
                     if e.next == Next::Attacca {
+                        // TODO(quality-needs-cycles-rule-split-across-modules)
                         if e.cycles.is_none() {
                             diag.errors.push(format!(
                                 "block {index} \"{}\": next: \"attacca\" needs cycles (a \
@@ -322,6 +323,20 @@ mod tests {
         let e = l.blocks().next().unwrap();
         assert_eq!(e.voices.len(), 1);
         assert_eq!(e.voices[0].name, "bell");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn countdown_without_cycles_is_an_error_through_a_file_override() {
+        let root = tmpdir("countdown");
+        std::fs::write(root.join("p.json"), CLAVE).unwrap();
+        let text = block(r#"{ "file": "p.json", "cycle_count": "countdown" }"#);
+        let (l, d) = parse_str(&text, &root);
+        assert!(l.is_none());
+        assert_eq!(
+            d.errors,
+            ["block 1 \"A\": cycle_count: \"countdown\" needs cycles (a looping block never ends)"]
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 

@@ -177,7 +177,7 @@ reference** `{"file": PATH, ...overrides}`.
   no file, so its paths resolve against your cwd.
 - Any other key in the reference overrides the file's top-level field of the
   same name (`label`, `title`, `tempo`, `beats`, `cycles`, `count_in`,
-  `hidden`, `window_ms`, `ending`, `next`, `playhead`); `voices` replaces the file's voices
+  `hidden`, `window_ms`, `ending`, `next`, `playhead`, `feedback`, `cycle_count`); `voices` replaces the file's voices
   wholesale.
 - The merged object is validated exactly like a full exercise, so an
   unknown key in either the file or the override is an error.
@@ -200,6 +200,8 @@ is in quotes):
 - `"next": "attacca"` needs `cycles` → `next: "attacca" needs cycles (a
   looping block never ends)`, and a rhythm block after it → `next:
   "attacca" but no block follows`.
+- `"cycle_count": "countdown"` needs `cycles` → `cycle_count: "countdown"
+  needs cycles (a looping block never ends)`.
 - A lesson with no rhythm blocks is valid.
 
 Every error names the block by number and label (`block 2 "B": …`), and
@@ -247,7 +249,9 @@ Exercise keys — exactly these; any other key is an error ("unknown field
 | `source` | string, optional: where the pattern comes from (a URL). Ignored by the player. |
 | `window_ms` | number `10..=500`, optional, default 100: how far (ms) either side of a target a stroke of the user's part still counts as hitting it; used as written. |
 | `next` | `"stop"` (default) or `"attacca"`; with `cycles` only. `"attacca"`: when the last cycle is done the next rhythm block of the lesson begins on the same clock, with no gap and without its `count_in` (it does play its count-in when started on its own); the window scrolls to it. The blocks linked this way, from the one started to the first whose `next` is `"stop"`, are a **score**; starting a middle block starts the score from there. Each block keeps its own tempo, beats, voices, mutes and part, and each block with a part has its own report and run file. |
-| `playhead` | true/false, optional, default true. `false`: the window draws no playhead, no hand on the ring and no flash on the strokes it passes; the grid, the count-in, the cycle counter and the user's marks stay. |
+| `playhead` | true/false, optional, default true. `false`: the window draws no playhead, no hand on the ring and no flash on the strokes it passes; the grid, the count-in, the cycle cue (`cycle_count`) and the user's marks (`feedback`) stay. |
+| `feedback` | `"live"` (default), `"after"` or `"none"`: when the window shows the user's judgments — the hit/miss/early/late marks on the grid and the necklace and the `hit · miss · extra · mean` line in the header. `"after"`: nothing until the performance is over, then the tally and the marks of its last cycles, as `"live"` would have left them. A block that ends, is stopped (■, `stop`) or re-armed shows its result until the next start or `show`; a block that is restarted (`r`, or ▶ or `space` once it has ended or been stopped) or switched away from (▶ or `space` on another block with a part) discards its on-screen result at once — the run file and `report` keep it. A paused block has not ended. `"none"`: never on screen. The field does not touch the playhead, the count-in, the cycle cue, the `you:` line, the sound of the user's strokes, the judging, the run file, `report` or `wait`: the report is yours, the screen is the user's. No key toggles it. On a block with no part it does nothing. |
+| `cycle_count` | `"countdown"`, `"count"` (default) or `"none"`: how the status line shows where the block is. `"count"`: `playing A · cycle 3/8`. `"none"`: `playing A`, nothing more; the header's `8 cycles · then B` stays, so the user knows what they are counting to. `"countdown"` (needs `cycles`): `7 to go` on the first cycle of eight … `1 to go`, then `last cycle` — "3 to go" is three more after this one — and on the last cycle the block header also shows `last cycle` (`last cycle · then B` when `B` follows attacca) in the count-in's place; a one-cycle block reads `last cycle` from the start. Not affected by `playhead`; `wait` and `report` do not change. No key toggles it. |
 | `ending` | `"downbeat"` (default) or `"none"`; only matters with `cycles`, on the last block of a score. `"downbeat"`: after the last cycle the block ends on the next "one" — every voice's pulse-0 stroke sounds once more (an accented click if no voice has one), and a part's pulse-0 target gets one more instance, so the user's final tap there is a hit. `"none"`: the music stops after the last beat and a tap on the "one" after it is an extra. |
 
 Voice keys — exactly these; any other key is an error:
@@ -296,7 +300,8 @@ A voice with `keys` is the user's part. Each bound key sounds the voice's
 instrument at that tone, whenever the window has focus; while the block
 plays, every stroke is judged against the voice's onsets: hit (with how
 early or late), missed, or extra. The window draws the judgments on the
-grid and the necklace and counts them in the block header.
+grid and the necklace and counts them in the block header, as the block's
+`feedback` allows.
 
 - The part is **muted unless `"mute": false`**: the computer's version is
   then a guide track under the user's strokes. The user can toggle it with
@@ -367,10 +372,16 @@ ear can answer:
   reveals it with `h` to check. A hidden block still shows its header:
   when the library title names the answer ("Son clave 3-2"), override
   `title` too.
-- To stop the user playing from the picture instead of the sound, set
-  `"playhead": false` and keep the grid visible: they read the score, as
-  a musician does, without being shown where they are. `hidden` is for
-  questions whose answer is on the grid.
+- Three rungs, from the picture to the ear. Learning the piece: the
+  playhead on, `feedback` live. The middle rung: `"playhead": false` with
+  live marks — the user reads the score, as a musician does, without being
+  shown where they are, and sees each stroke judged. Checking the ear:
+  `"feedback": "after"` (or `"none"`) with the grid visible and
+  `"playhead": false` — band-like, nothing on screen moves or grades until
+  the end; the result then appears where it would have. Tell the user to
+  let the block end or press ■, not `r`: a restart starts the next attempt
+  and discards the last one's screen. `hidden` is for questions whose
+  answer is on the grid.
 - When the user already hears something, confirm it in a sentence and
   move on. A curriculum step the user has mastered is not a quiz.
 
@@ -403,7 +414,15 @@ Playing a part:
   while it loops. It ends on the downbeat: the user plays until the
   music stops, and their last tap is on that "one". Only a deliberate
   "count the cycles and stop yourself" exercise sets `"ending": "none"`,
-  where a tap after the end is a real error.
+  where a tap after the end is a real error; it also sets
+  `"cycle_count": "none"` and `"feedback": "none"` or `"after"`, because
+  under `"live"` a part with one stroke per cycle counts the cycles in its
+  tally; the window does not check the pairing. Lead up to it with `cycle_count`: `"countdown"` while the user
+  learns to feel the form's end (the crutch), `"count"` once they can
+  subtract, `"none"` when the ear should know; the same for attacca into
+  a block whose part changes, where cycle 1 of the new block is judged as
+  any cycle is. `"none"` does not hide the music itself stopping or
+  moving on.
 - Read the report's per-note rows for which stroke is early or late, and
   its over-time rows for whether the user is settling in or drifting.
 - `extra` counts every stroke that matched no target; `wide` is the part

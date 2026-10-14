@@ -195,8 +195,9 @@ pub struct Exercise {
     /// Beats per minute, already clamped to `TEMPO_MIN..=TEMPO_MAX`.
     pub tempo: f64,
     pub beats: u32,
-    // TODO(cycle-countdown): how the cycle count is shown, per block.
     pub cycles: Option<u32>,
+    /// How the window shows where the block is in its cycles.
+    pub cycle_count: CycleCount,
     pub count_in: u32,
     /// Whether the window starts with the grid and necklace hidden.
     pub hidden: bool,
@@ -211,9 +212,33 @@ pub struct Exercise {
     pub next: Next,
     /// Whether the window draws where the music is: the playhead and the
     /// flash of the strokes it passes.
-    // TODO(feedback-mode): whether the marks and counts show live, after
-    // the block, or never; separate from the playhead.
     pub playhead: bool,
+    /// When the window shows the user's judgments. `After`: shown once
+    /// the performance has retired, whatever retired it.
+    pub feedback: Feedback,
+}
+
+/// When the window shows the user's judgments: the marks on the grid and
+/// the necklace, and the tally in the block header.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Feedback {
+    /// As each stroke is judged.
+    #[default]
+    Live,
+    /// Once the performance is over.
+    After,
+    /// Never.
+    None,
+}
+
+impl Feedback {
+    pub fn name(self) -> &'static str {
+        match self {
+            Feedback::Live => "live",
+            Feedback::After => "after",
+            Feedback::None => "none",
+        }
+    }
 }
 
 /// What follows a finite exercise's last cycle.
@@ -232,6 +257,29 @@ impl Next {
         match self {
             Next::Stop => "stop",
             Next::Attacca => "attacca",
+        }
+    }
+}
+
+/// How the window shows where a block is in its cycles: the status line's
+/// cycle text and, under `Countdown`, the header's last-cycle cue.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CycleCount {
+    /// Cycles left after this one, then `last cycle`. Needs `cycles`.
+    Countdown,
+    /// The 1-based cycle, out of `cycles` or `∞`.
+    #[default]
+    Count,
+    /// Nothing.
+    None,
+}
+
+impl CycleCount {
+    pub fn name(self) -> &'static str {
+        match self {
+            CycleCount::Countdown => "countdown",
+            CycleCount::Count => "count",
+            CycleCount::None => "none",
         }
     }
 }
@@ -279,6 +327,8 @@ const EXERCISE_KEYS: &[&str] = &[
     "ending",
     "next",
     "playhead",
+    "feedback",
+    "cycle_count",
 ];
 const VOICE_KEYS: &[&str] = &[
     "name",
@@ -390,24 +440,34 @@ impl Exercise {
         {
             err("source: must be a string".into());
         }
-        let ending = match obj.get("ending") {
-            None => Ending::Downbeat,
-            Some(v) if v == "downbeat" => Ending::Downbeat,
-            Some(v) if v == "none" => Ending::None,
-            Some(_) => {
-                err("ending: must be \"downbeat\" or \"none\"".into());
-                Ending::Downbeat
-            }
-        };
-        let next = match obj.get("next") {
-            None => Next::Stop,
-            Some(v) if v == "stop" => Next::Stop,
-            Some(v) if v == "attacca" => Next::Attacca,
-            Some(_) => {
-                err("next: must be \"stop\" or \"attacca\"".into());
-                Next::Stop
-            }
-        };
+        let ending = opt_word(
+            obj,
+            "ending",
+            &[Ending::Downbeat, Ending::None],
+            Ending::name,
+            &mut err,
+        );
+        let next = opt_word(
+            obj,
+            "next",
+            &[Next::Stop, Next::Attacca],
+            Next::name,
+            &mut err,
+        );
+        let feedback = opt_word(
+            obj,
+            "feedback",
+            &[Feedback::Live, Feedback::After, Feedback::None],
+            Feedback::name,
+            &mut err,
+        );
+        let cycle_count = opt_word(
+            obj,
+            "cycle_count",
+            &[CycleCount::Countdown, CycleCount::Count, CycleCount::None],
+            CycleCount::name,
+            &mut err,
+        );
 
         let mut voices = Vec::new();
         match obj.get("voices") {
@@ -446,12 +506,20 @@ impl Exercise {
         if diag.errors.len() != errors_before {
             return None;
         }
+        // Every field parsed, so a `None` here means the key is absent.
+        if cycle_count == CycleCount::Countdown && cycles.is_none() {
+            diag.errors.push(format!(
+                "{ctx}cycle_count: \"countdown\" needs cycles (a looping block never ends)"
+            ));
+            return None;
+        }
         Some(Exercise {
             label: resolve_label(label.as_deref(), title.as_deref(), index),
             title,
             tempo: tempo?,
             beats: beats?,
             cycles,
+            cycle_count,
             count_in,
             hidden,
             window_ms,
@@ -459,6 +527,7 @@ impl Exercise {
             ending,
             next,
             playhead,
+            feedback,
         })
     }
 }
@@ -518,15 +587,13 @@ impl From<Exercise> for Value {
         }
         // Emitted only when not the default, so a window that predates the
         // key still reads every lesson that does not use it.
-        if e.ending != Ending::Downbeat {
-            obj["ending"] = e.ending.name().into();
-        }
-        if e.next != Next::Stop {
-            obj["next"] = e.next.name().into();
-        }
+        put_word(&mut obj, "ending", e.ending, Ending::name);
+        put_word(&mut obj, "next", e.next, Next::name);
         if !e.playhead {
             obj["playhead"] = false.into();
         }
+        put_word(&mut obj, "feedback", e.feedback, Feedback::name);
+        put_word(&mut obj, "cycle_count", e.cycle_count, CycleCount::name);
         obj
     }
 }
@@ -869,6 +936,43 @@ fn opt_range(
     }
 }
 
+/// A string-valued field naming one of `words`: absent reads as the
+/// default; anything else is `{key}: must be "a", "b" or "c"`.
+fn opt_word<T: Copy + Default>(
+    obj: &Map<String, Value>,
+    key: &str,
+    words: &[T],
+    name: fn(T) -> &'static str,
+    err: &mut impl FnMut(String),
+) -> T {
+    let Some(v) = obj.get(key) else {
+        return T::default();
+    };
+    if let Some(&w) = words.iter().find(|&&w| v == name(w)) {
+        return w;
+    }
+    let quoted: Vec<String> = words.iter().map(|&w| format!("\"{}\"", name(w))).collect();
+    let list = match quoted.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+        None => String::new(),
+    };
+    err(format!("{key}: must be {list}"));
+    T::default()
+}
+
+/// Sets `obj[key]` to `v`'s word unless `v` is the default.
+fn put_word<T: Copy + Default + PartialEq>(
+    obj: &mut Value,
+    key: &str,
+    v: T,
+    name: fn(T) -> &'static str,
+) {
+    if v != T::default() {
+        obj[key] = name(v).into();
+    }
+}
+
 fn opt_bool(
     obj: &Map<String, Value>,
     key: &str,
@@ -1162,6 +1266,11 @@ mod tests {
             "{:?}",
             d.errors
         );
+        assert!(
+            d.errors[0].contains("playhead, feedback, cycle_count"),
+            "{:?}",
+            d.errors
+        );
         let mut v = example();
         v["source"] = json!("https://example.org");
         assert!(parse(v).0.is_some());
@@ -1433,6 +1542,90 @@ mod tests {
         let wire = serde_json::to_value(&e).unwrap();
         assert_eq!(wire["playhead"], json!(false));
         assert_eq!(serde_json::from_value::<Exercise>(wire).unwrap(), e);
+    }
+
+    #[test]
+    fn feedback_parses_and_defaults_to_live() {
+        assert_eq!(parse(example()).0.unwrap().feedback, Feedback::Live);
+        for (w, f) in [
+            ("live", Feedback::Live),
+            ("after", Feedback::After),
+            ("none", Feedback::None),
+        ] {
+            let mut v = example();
+            v["feedback"] = json!(w);
+            assert_eq!(parse(v).0.unwrap().feedback, f);
+        }
+        for bad in [json!("later"), json!(false), json!(1), json!(null)] {
+            let mut v = example();
+            v["feedback"] = bad;
+            one_error(v, &["feedback: must be \"live\", \"after\" or \"none\""]);
+        }
+    }
+
+    #[test]
+    fn cycle_count_parses_and_defaults_to_count() {
+        assert_eq!(parse(example()).0.unwrap().cycle_count, CycleCount::Count);
+        for (w, c) in [
+            ("countdown", CycleCount::Countdown),
+            ("count", CycleCount::Count),
+            ("none", CycleCount::None),
+        ] {
+            let mut v = example();
+            v["cycle_count"] = json!(w);
+            assert_eq!(parse(v).0.unwrap().cycle_count, c);
+        }
+        for bad in [json!("down"), json!(true), json!(3), json!(null)] {
+            let mut v = example();
+            v["cycle_count"] = bad;
+            one_error(
+                v,
+                &["cycle_count: must be \"countdown\", \"count\" or \"none\""],
+            );
+        }
+    }
+
+    #[test]
+    fn countdown_needs_cycles() {
+        let mut v = example();
+        v.as_object_mut().unwrap().remove("cycles");
+        v["cycle_count"] = json!("countdown");
+        let (e, d) = parse(v);
+        assert!(e.is_none());
+        assert_eq!(
+            d.errors,
+            ["cycle_count: \"countdown\" needs cycles (a looping block never ends)"]
+        );
+        for ok in ["count", "none"] {
+            let mut v = example();
+            v.as_object_mut().unwrap().remove("cycles");
+            v["cycle_count"] = json!(ok);
+            assert_eq!(parse(v).0.unwrap().cycles, None);
+        }
+        let mut v = example();
+        v["cycles"] = json!(0);
+        v["cycle_count"] = json!("countdown");
+        one_error(v, &["cycles: "]);
+    }
+
+    #[test]
+    fn exercise_json_omits_default_feedback_and_cycle_count() {
+        let plain = serde_json::to_value(parse(example()).0.unwrap()).unwrap();
+        assert!(plain.get("feedback").is_none());
+        assert!(plain.get("cycle_count").is_none());
+        for (key, w) in [
+            ("feedback", "after"),
+            ("feedback", "none"),
+            ("cycle_count", "countdown"),
+            ("cycle_count", "none"),
+        ] {
+            let mut v = example();
+            v[key] = json!(w);
+            let e = parse(v).0.unwrap();
+            let wire = serde_json::to_value(&e).unwrap();
+            assert_eq!(wire[key], json!(w));
+            assert_eq!(serde_json::from_value::<Exercise>(wire).unwrap(), e);
+        }
     }
 
     #[test]

@@ -6,6 +6,19 @@ Notable changes to djembot. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`feedback` sets when a block shows the user's judgments.** `"live"`
+  (the default) draws the marks and the header tally as each stroke is
+  judged, `"after"` only once the performance has ended, been stopped or
+  been re-armed, and `"none"` never; the judging, the run file, `report`
+  and `wait` are the same under all three.
+- **`cycle_count` sets how a block shows where it is in its cycles.**
+  `"count"` (the default) keeps the status line's `cycle 3/8`, `"none"`
+  drops it so the user counts, and `"countdown"` reads `7 to go` … `1 to
+  go`, `last cycle`, with `last cycle` (`· then B` before an attacca) in
+  the block header on the last cycle. `"countdown"` needs `cycles`.
+
 ### Changed
 
 - **The journal is the student's current state; sessions go to `log/`.**
@@ -58,6 +71,13 @@ Notable changes to djembot. Format follows
   was playing, so they failed on hosts that had been up for a long time,
   GitHub's CI among them. They now ask about the simulated moment
   instead. No change to the program's behaviour.
+- **A block whose judging window outlasts the score now ends.** When a
+  block with a part was followed attacca by a very short last block (a
+  one-beat closer), the score could stop while the first block was still
+  waiting out its trail of late strokes, and that block stayed open until
+  the next stop or start. It now ends `by=end` once its trail is over: its
+  run file is written, under `feedback: "after"` its result is shown, and
+  `wait` returns with every `run=` of the score.
 
 ## [0.1.0] — 2026-10-13
 

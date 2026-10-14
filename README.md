@@ -8,7 +8,8 @@ audio clock so what you see is what you hear.
 
 A lesson can also give you a part to play on the computer keyboard: each
 bound key sounds the part's instrument, the window marks every stroke as
-early, on time, late, missed or extra as you play, and the instructor reads
+early, on time, late, missed or extra — as you play, after the block, or
+not at all, as the lesson sets — and the instructor reads
 a report of the run (`djembot report`).
 
 Linux only (Wayland or X11): the window reads the keyboard through evdev.
@@ -85,7 +86,8 @@ The outlined block is the selected one, and the keys act on it: `↓`/`j`
 next block, `↑`/`k` previous block (selecting does not play), `space`
 play/pause (and start an armed block), `r` restart from the count-in, `h` hide/reveal its grid, `1`–`9`
 mute voice N, `q` quit. Playing a block selects it. The status line shows the lesson, what is playing (`playing A ·
-cycle 3/8`, or `armed A`), the soundfont, the keyboard status (`keys: 1 device`), the
+cycle 3/8` — or `playing A · 3 to go` / `playing A`, as the block's
+`cycle_count` says — or `armed A`), the soundfont, the keyboard status (`keys: 1 device`), the
 calibration (`calibration: +12 ms` or `uncalibrated`) and, after a run is
 saved, its path.
 
