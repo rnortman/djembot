@@ -8,6 +8,28 @@ Notable changes to djembot. Format follows
 
 ### Changed
 
+- **The journal is the student's current state; sessions go to `log/`.**
+  `JOURNAL.md` is rewritten at the end of every session — the student,
+  where they are, tool notes — instead of growing by one session's notes
+  each time, and its *Latest session* points at the session in progress.
+  Each session gets `log/YYYY/MM/DD-NN/`, created when it starts, holding
+  `session.md` (written as the session goes) and the session's run files,
+  each copied in as `djembot wait` reports it. The instructor reads only the
+  journal and the session it names, so startup reads the same amount
+  however long the history is. `init` lays down nothing new; the first
+  session creates `log/`.
+
+  An existing learning directory updates by hand: delete its `CLAUDE.md`
+  and run `djembot init` again, which writes the new one and keeps every
+  other file (`init` never overwrites, and reports a used journal as
+  differing from the template whichever layout it has); then rewrite
+  `JOURNAL.md` to the new template's shape — its opening paragraph and
+  its four sections — keeping *The student*, *Where we are* and *Tool
+  notes* as they are, moving the *Sessions* text into a first `log/`
+  entry (`log/YYYY/MM/DD-01/session.md`, dated when you do it) and
+  naming that file under *Latest session*. A journal that was never
+  written to is deleted and rewritten by `init` the same way.
+
 - **A late tap on the closing "one" is now judged instead of dropped.**
   After the last block of a performance ends, the window keeps judging
   strokes for one beat (or the timing window, if that is longer) — the

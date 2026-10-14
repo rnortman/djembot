@@ -8,8 +8,8 @@ assign it with `keys`, the window sounds and judges their strokes, and
 `djembot report` tells you how it went. There are no game modes or scores.
 
 You run in the user's learning directory, which `djembot init` laid down
-and the user keeps as a git repository: `lessons/`, `JOURNAL.md` and
-`library/` are theirs, and this file is its `CLAUDE.md`.
+and the user keeps as a git repository: `lessons/`, `JOURNAL.md`,
+`log/` and `library/` are theirs, and this file is its `CLAUDE.md`.
 
 ## The loop
 
@@ -59,7 +59,9 @@ and the user keeps as a git repository: `lessons/`, `JOURNAL.md` and
    performance is over: an `ended` with `by=end` and no `next` (the score
    played to its end), `by=stop` or `by=enough`. When it returns, run
    `djembot report RUN` for each `run=` it printed (a score writes one per
-   block with a part). `by=restart` or `by=switch` means the user started
+   block with a part). Record each `run=` the moment `wait` prints it
+   (*Journal*, *During*): a later `wait` does not print it again.
+   `by=restart` or `by=switch` means the user started
    over or moved on: keep waiting. If the performance had already ended
    when you ran it, it prints that `ended` line and returns at once; if the
    window closes, it prints `error: the window closed`.
@@ -97,10 +99,39 @@ without a restart.
 
 ## Journal
 
-`JOURNAL.md` is the record handed from one session to the next. Read it
-after this file at the start of a session; add to it as you go — what the
-user heard, what they played, what to do next. At the end of a session,
-commit the new lessons and the journal (`git add -A && git commit`).
+`JOURNAL.md` is the student's current state, handed from one session to
+the next, and `log/` is the history. What stays true about the student —
+their background, physical limits, what they struggle with, tool quirks —
+lives in the journal and survives every rewrite; what happened on a day
+lives in that day's `session.md`.
+
+**Start.** Read `JOURNAL.md` after this file, then the `session.md` its
+*Latest session* names (`none yet`: this is the first session; read
+nothing more). Then create this session's directory, `log/YYYY/MM/DD-NN/`
+— today's date, `NN` the session's number within the day, two digits:
+one more than the highest `NN` among the siblings in `log/YYYY/MM/` named
+with today's `DD-`, or `01` if there are none — start `session.md` in it,
+and set the journal's *Latest session* to that file, relative to the
+learning directory. That listing of one month directory is the only look
+at `log/` you take; never list `log/` itself. The first session creates
+`log/`.
+
+**During.** Write `session.md` as the session goes, not at the end: what
+the user heard, what they played, what the reports showed, and every
+`run=` path the moment `wait` prints it (JSON-decoded, if `wait` printed
+it as a JSON string); in the same breath copy the file into the
+session's directory (`cp PATH log/YYYY/MM/DD-NN/`, `PATH` quoted for the
+shell). A `run=` that scrolled past a `wait` you were not reading is
+gone. Name lessons by number (`lessons/012-…`); a lesson shown from
+stdin has no number, so describe it. A session cut off at any point
+leaves its directory, its notes so far and its runs so far on disk, and
+the journal already names it: the next session reads it like any other.
+
+**End.** Finish `session.md`. Rewrite `JOURNAL.md` to the current state —
+*The student*, *Where we are*, *Tool notes* — carrying forward what
+remains true and dropping what was only about today; *Latest session*
+already names this session. This is "update the state", not "summarise
+the old journal". Then `git add -A && git commit`.
 
 ## Lesson format
 

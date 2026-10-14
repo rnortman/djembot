@@ -67,48 +67,13 @@ as a target, so counting can be practised before the score has a change
 in it. Interacts with `advance-on-threshold`: if a section can repeat,
 the countdown has to say so well ahead ("another 8").
 
-## `journal-log`
-
-The instructor contract (`starter/instructor.md`, *Journal*) has the
-instructor append every session to `JOURNAL.md`, and the template
-(`starter/JOURNAL.md`) fixes "newest session at the bottom of
-*Sessions*". The journal therefore grows without bound and is read in
-full at the start of every session: two sessions already made 230
-lines, and a learner who practises twice a day would have thousands
-within months, most of it stale detail. Git keeps the history anyway,
-so the file does not have to.
-
-Change, in the contract, the template and the changelog:
-
-- `JOURNAL.md` is the student's current state, rewritten at the end of
-  each session to what the next instructor needs: the student, where
-  they are in the curriculum and what to do next, tool notes, and a
-  *Latest session* pointer. Nothing is appended.
-- Each session gets `log/YYYY/MM/DD-NN/` (`NN` the session's number
-  within the day): `session.md`, the write-up of what the user heard,
-  played and what the runs showed, naming lessons by number, and beside
-  it the session's run files. Nested by year and month so a month's
-  listing stays readable for a daily practitioner.
-- At session start the instructor reads the journal, then the entry it
-  names, and never lists `log/`: that keeps startup context flat
-  however long the history gets. At session end: write `session.md`,
-  copy the run files in, rewrite the journal, commit.
-- `log/` joins `lessons/`, `JOURNAL.md` and `library/` in the contract's
-  list of what is the user's. `init` lays down nothing new (an empty
-  directory cannot be embedded); the first session creates it.
-- An existing learning directory keeps its own copies (`init` reports
-  them as differing); the changelog says to update by hand.
-
-Until `runs-in-learning-dir` lands, the copying of run files is the
-instructor's job, from the `run=` paths `wait` prints.
-
 ## `runs-in-learning-dir`
 
 Run files go to `$XDG_DATA_HOME/djembot/runs`, outside the learning
 directory, so the evidence behind a session's write-up is not in the
 learner's git repository and dies with the machine or the run format.
-With `journal-log`, the instructor copies each `run=` path that `wait`
-prints into the session's `log/YYYY/MM/DD-NN/` directory by hand.
+The instructor copies each `run=` path that `wait` prints into the
+session's `log/YYYY/MM/DD-NN/` directory by hand.
 
 Change: let the window write runs where the learning directory wants
 them: `djembot gui --runs DIR` (or `DJEMBOT_RUNS`), or let `show` pass

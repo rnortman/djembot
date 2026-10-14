@@ -51,9 +51,10 @@ claude                # in another terminal, in this directory
 ```
 
 The instructor reads `CLAUDE.md`, writes lessons into `lessons/`, drives
-the window with the commands below, and keeps `JOURNAL.md` so the next
-session picks up where this one stopped; the directory is yours, and so is
-its history. For an agent that reads `AGENTS.md` instead, `ln -s CLAUDE.md
+the window with the commands below, keeps `JOURNAL.md` as the student's
+current state, and writes each session's notes and run files to `log/`,
+which the first session creates; the directory is yours, and so is its
+history. For an agent that reads `AGENTS.md` instead, `ln -s CLAUDE.md
 AGENTS.md`. Before playing a part, join the `input` group (*Keyboard
 access*) and calibrate once (`djembot calibrate`).
 
@@ -142,7 +143,9 @@ offset too. Calibrate once per machine, keyboard and output device.
   (`~/.local/share/djembot/runs/`), one per performance with at least one
   stroke or miss, written when it ends; a score writes one per block with
   a part. `djembot report RUN.json` prints the report of one, and `djembot
-  wait` prints each one's path in its `ended … run=PATH` line.
+  wait` prints each one's path in its `ended … run=PATH` line. The
+  instructor copies each run of a session into that session's
+  `log/YYYY/MM/DD-NN/` in the learning directory.
 - Calibration: `$XDG_CONFIG_HOME/djembot/calibration.json`
   (`~/.config/djembot/calibration.json`), read when `djembot gui` starts.
 

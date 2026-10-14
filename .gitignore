@@ -5,6 +5,7 @@
 /lessons/
 /library/
 /JOURNAL.md
+/log/
 # Personal Claude Code settings and context (settings.json and CLAUDE.md are shared)
 .claude/settings.local.json
 CLAUDE.local.md
