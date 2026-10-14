@@ -6,6 +6,8 @@ Notable changes to djembot. Format follows
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-14
+
 ### Added
 
 - **`feedback` sets when a block shows the user's judgments.** `"live"`
