@@ -221,11 +221,16 @@ pub fn window_frames(window_ms: f64, rate: u32) -> u64 {
     (window_ms * rate as f64 / 1000.0).round() as u64
 }
 
-/// How far a judged span reaches past its block's edge on a side: one
-/// window, or across an attacca boundary the neighbour's beat when that is
-/// longer.
-fn reach(window: u64, neighbour_beat: Option<u64>) -> u64 {
-    neighbour_beat.map_or(window, |beat| beat.max(window))
+/// The beat of `ex`, compiled as `tl`, in frames: the integer share of
+/// the cycle each beat gets.
+pub fn beat_frames(ex: &Exercise, tl: &Timeline) -> u64 {
+    tl.cycle_len / u64::from(ex.beats)
+}
+
+/// How far a judged span reaches past its block's edge on a side: the
+/// window, or `beat` when one is given and longer.
+fn reach(window: u64, beat: Option<u64>) -> u64 {
+    beat.map_or(window, |beat| beat.max(window))
 }
 
 /// The judged frame the span of a block whose cycle 0 begins at `start`
@@ -267,7 +272,10 @@ pub struct Performance {
     window: u64,
     /// How far before `start` the judged span begins, frames.
     lead: u64,
-    /// How far after `end` the judged span ends, frames.
+    /// How far after `end` the judged span ends, frames: the beat of
+    /// whichever block owns the next target — the successor's across an
+    /// attacca boundary, this block's own at the end of a score — or the
+    /// window when that is longer.
     trail: u64,
     /// Whether the block was entered attacca: it has no count-in, and the
     /// time before `start` is the boundary region with the block before.
@@ -365,9 +373,10 @@ impl Performance {
             rate,
             window,
             lead: reach(window, neighbours.before),
-            // TODO(closing-tap-trail): one window after the end drops a late
-            // closing tap that would be a wide extra anywhere else.
-            trail: reach(window, neighbours.after),
+            trail: reach(
+                window,
+                Some(neighbours.after.unwrap_or(beat_frames(ex, tl))),
+            ),
             attacca: neighbours.before.is_some(),
             last: neighbours.after.is_none(),
             offset: offset_ms * rate as f64 / 1000.0,
@@ -736,6 +745,11 @@ impl Performance {
     /// cycle or either neighbour among those that can annotate an extra
     /// (`annotates`): `(cycle, target, frame − instance)`. `None` when there
     /// is none.
+    // TODO(closing-tap-annotation): on the last block the voice's unplayed
+    // pulses after the end compete with the closing one, so a dragged
+    // closing tap more than half the gap to the voice's next onset late
+    // annotates to that unplayed pulse, not the missed closing one, and
+    // is not wide.
     fn nearest_instance(&self, frame: f64, voice: usize) -> Option<(i64, usize, f64)> {
         self.instances_near(frame, voice)
             .filter(|&(k, t, _)| self.annotates(k, t))
@@ -1439,8 +1453,9 @@ mod tests {
             hit(1, 3, 175.0 * MS)
         );
         assert_eq!(p.judge(end + 100.0 * MS, 1, 'x', None), Judgment::Extra);
-        assert_eq!(p.judge(end + 201.0 * MS, 1, 'x', None), Judgment::Ignored);
-        assert_eq!(p.tally().extra, 1);
+        assert_eq!(p.judge(end + 201.0 * MS, 1, 'x', None), Judgment::Extra);
+        assert_eq!(p.judge(end + 501.0 * MS, 1, 'x', None), Judgment::Ignored);
+        assert_eq!(p.tally().extra, 2);
     }
 
     #[test]
@@ -1463,7 +1478,8 @@ mod tests {
             assert_eq!(p.current_cycle(), 1);
         }
         let mut p = clave(100.0, 0.0);
-        assert_eq!(p.judge(end + 101.0 * MS, 1, 'x', None), Judgment::Ignored);
+        assert_eq!(p.judge(end + 101.0 * MS, 1, 'x', None), Judgment::Extra);
+        assert_eq!(p.judge(end + BEAT + 1.0, 1, 'x', None), Judgment::Ignored);
     }
 
     #[test]
@@ -1692,8 +1708,8 @@ mod tests {
         assert_eq!(p.current_cycle(), 1);
         let missed: Vec<(u32, usize)> = p.misses().iter().map(|m| (m.cycle, m.target)).collect();
         assert_eq!(missed, [(0, 0), (0, 2), (0, 3), (1, 0)]);
-        assert!(!p.closed(o + at(2, 0) + 100.0 * MS));
-        assert!(p.closed(o + at(2, 0) + 101.0 * MS));
+        assert!(!p.closed(o + at(2, 0) + BEAT));
+        assert!(p.closed(o + at(2, 0) + BEAT + 1.0));
         let run = p.run(EndedBy::End);
         assert_eq!(run.hits[1].t_ms, (at(0, 6) + 10.0 * MS - 4.0 * BEAT) / MS);
         assert_eq!(run.hits[0].cycle, -4, "a stroke before the block");
@@ -1765,6 +1781,63 @@ mod tests {
     }
 
     #[test]
+    fn a_last_block_closes_a_beat_after_its_end() {
+        let mut p = clave(100.0, 0.0);
+        let end = at(2, 0);
+        assert_eq!(p.end(), Some(end as u64));
+        assert_eq!(p.judge(end + BEAT, 1, 'x', None), Judgment::Extra);
+        assert_eq!(p.judge(end + BEAT + 1.0, 1, 'x', None), Judgment::Ignored);
+        assert!(!p.closed(end + BEAT));
+        assert!(p.closed(end + BEAT + 1.0));
+    }
+
+    #[test]
+    fn the_window_governs_the_last_block_when_longer_than_a_beat() {
+        // 300 bpm: a beat is 200 ms (9 600 frames), shorter than the window.
+        let window = 500.0 * MS;
+        let mut v = link_json(&[0, 6], "stop");
+        v["tempo"] = json!(300);
+        v["window_ms"] = json!(500);
+        let last = Neighbours {
+            before: Some(9_600),
+            after: None,
+        };
+        let p = linked(v, 0.0, last);
+        let end = p.end().unwrap() as f64;
+        assert!(!p.closed(end + window));
+        assert!(p.closed(end + window + 1.0));
+    }
+
+    #[test]
+    fn a_late_closing_tap_is_annotated_to_the_closing_one() {
+        // 150 ms after the end, 50 ms outside the window: the closing pulse 0
+        // is nearer than pulse 15 before it (275 ms) or the phantom pulse 6
+        // after it (600 ms).
+        let mut p = clave(100.0, 0.0);
+        let end = at(2, 0);
+        assert_eq!(p.judge(end + 150.0 * MS, 1, 'x', None), Judgment::Extra);
+        p.finish();
+        assert_eq!(
+            annotations(&p),
+            [(2, Some(0), Some(150.0), RunJudgment::Extra)]
+        );
+        assert!(p.misses().iter().any(|m| (m.cycle, m.target) == (2, 0)));
+    }
+
+    #[test]
+    fn beat_frames_is_the_integer_share_of_the_cycle() {
+        let mut bank = Bank::from_fn(|_| Arc::from(vec![1.0f32]));
+        let ex = exercise(clave_json(100.0));
+        let tl = Timeline::from(&ex, &mut bank, RATE).unwrap();
+        assert_eq!(beat_frames(&ex, &tl), 24_000);
+        let mut v = link_json(&[0, 6], "stop");
+        v["tempo"] = json!(300);
+        let ex = exercise(v);
+        let tl = Timeline::from(&ex, &mut bank, RATE).unwrap();
+        assert_eq!(beat_frames(&ex, &tl), 9_600);
+    }
+
+    #[test]
     fn the_window_widens_the_region_when_it_is_longer_than_a_beat() {
         // 300 bpm: a beat is 200 ms (9 600 frames), shorter than the window.
         let beat = 9_600;
@@ -1833,7 +1906,7 @@ mod tests {
         assert_eq!(p.nearest(at(0, 0) - 101.0 * MS, 1), None, "before the span");
         // The closing downbeat exists.
         assert_eq!(p.nearest(at(2, 0) - 20.0 * MS, 1), Some(20.0 * MS));
-        assert_eq!(p.nearest(at(2, 0) + 101.0 * MS, 1), None, "after the span");
+        assert_eq!(p.nearest(at(2, 0) + BEAT + 1.0, 1), None, "after the span");
     }
 
     #[test]
@@ -1879,9 +1952,9 @@ mod tests {
         p.advance(first + 100.0 * MS + 13.0 * MS);
         assert_eq!(p.misses().len(), 1);
         let end = p.end().unwrap() as f64;
-        assert!(!p.closed(end + 100.0 * MS + 11.0 * MS));
-        assert!(p.closed(end + 100.0 * MS + 13.0 * MS));
-        assert!(!clave(100.0, 0.0).closed(end + 100.0 * MS));
+        assert!(!p.closed(end + BEAT + 11.0 * MS));
+        assert!(p.closed(end + BEAT + 13.0 * MS));
+        assert!(!clave(100.0, 0.0).closed(end + BEAT));
     }
 
     #[test]

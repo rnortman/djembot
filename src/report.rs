@@ -889,6 +889,23 @@ pub mod tests {
     }
 
     #[test]
+    fn a_late_closing_tap_is_wide() {
+        // The closing "one" of cycle 2 missed, and tapped 150 ms late.
+        let late = RunHit {
+            judgment: RunJudgment::Extra,
+            ..hit(1, 2, 0, 150.0)
+        };
+        let mut r = run(vec![late], vec![miss(1, 2, 0)]);
+        r.ending = Ending::Downbeat;
+        r.parts = vec![part(1, "clave", &[0, 15])];
+        let text = render(&r, None);
+        let all = row_of(&text, "Overall", "all");
+        // extra wide; the wide mean is the last column.
+        assert_eq!(&all[4..6], ["1", "1"], "{text}");
+        assert_eq!(all.last(), Some(&"+150.0"), "{text}");
+    }
+
+    #[test]
     fn wide_is_zero_for_format_2_runs() {
         let mut v = serde_json::to_value(bell_slow()).unwrap();
         v["djembot"] = 2.into();

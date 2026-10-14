@@ -6,6 +6,21 @@ Notable changes to djembot. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A late tap on the closing "one" is now judged instead of dropped.**
+  After the last block of a performance ends, the window keeps judging
+  strokes for one beat (or the timing window, if that is longer) — the
+  same allowance it already gave across a block boundary. Before, a
+  closing tap more than one timing window late vanished, so the report
+  showed a plain miss and the instructor could not tell "never tapped the
+  last one" from "tapped it late". Now such a tap appears as an extra
+  stroke, counted *wide* when it was nearest the missed closing one. The
+  standard for a hit is unchanged. As a consequence, a finished
+  performance ends — `ended` fires, `wait` returns, the run file is
+  written — up to a beat later than before, and a restart or stop within
+  that beat is recorded as a restart or stop rather than a completed run.
+
 ### Fixed
 
 - **The test suite passes regardless of the machine's uptime.** Several

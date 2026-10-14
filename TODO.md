@@ -4,26 +4,6 @@ Deferred work, joined to the code by slug: an entry `## \`slug\`` here
 is referenced from the code as `// TODO(slug)`. Completing one removes
 both.
 
-## `closing-tap-trail`
-
-A tap on the closing "one" of a finite block that lands more than one
-window late is dropped, not recorded. `Performance::new` sets `trail`
-to `reach(window, None)` for the last block of a score, one window, and
-`closed()` ignores every stroke after `end + trail`. Anywhere else in
-the block the same stroke would be a wide extra, so the report cannot
-tell "did not tap the closing one" from "tapped it late": the closing
-target reads as a miss with no extra. Early closing taps survive; late
-ones do not. With a negative calibration offset the cut-off is even
-earlier on the keyboard.
-
-Change: keep the span open after the last target as long as the judging
-rules keep it open anywhere else, so a late closing tap is a wide extra:
-`trail = max(window, half the gap to the previous target)`, or the
-block's beat. The `ended` event and the run file can keep their
-schedule as long as strokes heard inside the trail reach the record, or
-`retire` waits out the trail. Test: a closing tap `window + 50 ms` late
-is a wide extra.
-
 ## `advance-on-threshold`
 
 A score section that repeats until the user passes, then continues
@@ -135,3 +115,29 @@ them: `djembot gui --runs DIR` (or `DJEMBOT_RUNS`), or let `show` pass
 the lesson's learning directory along so runs land in its current
 session directory. The run filename already carries timestamp and label.
 Then the contract drops the copying step.
+
+## `closing-tap-annotation`
+
+A stroke more than a window after the closing "one" is kept for a beat
+and reported as an extra annotated to the nearest target of its own
+voice, which the report counts as *wide* only when that target is the
+missed closing one. On the last block the voice's unplayed pulses after
+the end are also targets an extra may annotate, so a dragged closing tap
+is wide only while it is nearer the closing one than the voice's next
+onset: less than half that gap late. When half the gap is inside the
+window, no dragged closing tap is ever wide: at 120 bpm with the default
+100 ms window, a voice whose next onset is one sixteenth (125 ms) or one
+triplet pulse (167 ms) after the one has its halfway point at 62 or 83
+ms, inside the window; two sixteenths after leaves a 25 ms sliver. The
+report then shows a miss and a plain extra, which the instructor
+contract reads as losing the beat plus a stray stroke, and the
+dragged-last-tap signal exists only on voices with room after the one.
+
+One candidate: when annotating an extra, prefer a missed instance over
+one that was never due — at the end of a score, the missed closing one
+over an unplayed later pulse. Stated generally it changes what every
+annotation in a run means, and with it the report's wide counts and the
+pulse and cycle its per-note and over-time rows file each extra under;
+the grid and necklace draw an extra where it was struck and are
+unaffected. Stated for the closing one only it is a special case of the
+annotation rule.

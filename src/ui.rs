@@ -164,10 +164,10 @@ fn compile_score(bank: &mut Bank, rate: u32, doc: &Doc, block: usize) -> Result<
         let mut tl = Timeline::from(&ex, bank, rate)?;
         tl.mute = doc.blocks[b].muted;
         let end = tl.end.unwrap_or(0);
-        let beat = tl.cycle_len / u64::from(ex.beats);
+        let beat = perf::beat_frames(&ex, &tl);
         let before = chain.last_mut().map(|prev| {
             prev.neighbours.after = Some(beat);
-            prev.tl.cycle_len / u64::from(prev.ex.beats)
+            perf::beat_frames(&prev.ex, &prev.tl)
         });
         chain.push(Link {
             block: b,
@@ -1435,7 +1435,7 @@ impl<S> App<S> {
 
     /// Whether the window must keep redrawing: something is sounding, a
     /// command the clock does not reflect yet may start it, or a finished
-    /// block's last windows are still open.
+    /// block's judged span is still open.
     fn animating(&self) -> bool {
         self.playing() || self.engine.commands_pending() || self.post_end()
     }
@@ -3508,7 +3508,7 @@ mod tests {
         assert_eq!((run.ended_by, run.label.as_str()), (EndedBy::Open, "P"));
         assert_eq!(run.misses.len(), 1, "pulse 0 missed so far");
 
-        sim.run(&mut app, &mut cb, sim.at(2.2), &mut vec![], &hit_tx);
+        sim.run(&mut app, &mut cb, sim.at(2.6), &mut vec![], &hit_tx);
         let last = app.handle(Request::Report);
         let run = last.run.unwrap();
         // Pulse 0 in both cycles and the closing downbeat.
@@ -3535,14 +3535,14 @@ mod tests {
         // with no pass in between; then a report arrives.
         let part = part_f(&app);
         send_due(&mut vec![(sim.at(1.95), part)], sim.at(1.95), &hit_tx);
-        while sim.at(sim.k as f64 * TICK) <= sim.at(2.2) {
+        while sim.at(sim.k as f64 * TICK) <= sim.at(2.6) {
             cb.tick_at(sim.at(sim.k as f64 * TICK), sim.latency);
             sim.k += 1;
         }
         let (p, reply) = pending(Request::Report, Instant::now() + Duration::from_secs(5));
         req_tx.send(p).unwrap();
         let ctx = egui::Context::default();
-        let _ = ctx.run_logic(&window_input(true, false), |ctx| app.tick(ctx, sim.at(2.2)));
+        let _ = ctx.run_logic(&window_input(true, false), |ctx| app.tick(ctx, sim.at(2.6)));
         let run = reply.try_recv().unwrap().run.unwrap();
         assert_eq!(run.ended_by, EndedBy::End);
         // Pulse 0 and the closing downbeat were not struck.
@@ -4091,7 +4091,7 @@ mod tests {
         app.handle(perf_lesson("/l/p.md"));
         app.resume(0).unwrap();
         let mut sim = Sim::new(0);
-        sim.run(&mut app, &mut cb, sim.at(2.2), &mut vec![], &hit_tx);
+        sim.run(&mut app, &mut cb, sim.at(2.6), &mut vec![], &hit_tx);
         assert!(app.live.is_empty());
         assert_eq!(ended_by(&app), Some(EndedBy::End));
         app.resume(0).unwrap();
@@ -4118,11 +4118,11 @@ mod tests {
         sim.run(
             &mut app,
             &mut cb,
-            sim.wall(100_900.0),
+            sim.wall(120_100.0),
             &mut strokes,
             &hit_tx,
         );
-        assert!(app.live.is_empty(), "closed past end + window");
+        assert!(app.live.is_empty(), "closed past end + beat");
         let run = app.last_run.as_ref().unwrap();
         assert_eq!(
             (run.ended_by, run.ending),
@@ -4298,12 +4298,12 @@ mod tests {
 
     #[test]
     fn a_boundary_rush_is_wide_in_the_next_blocks_report() {
-        // B ends at ORIGIN_B + 192 000; it closes a window after that.
+        // B ends at ORIGIN_B + 192 000; it closes a beat after that.
         let (app, ..) = play_boundary(
             &[0, 6],
             &[0, 6, 15],
             &[ORIGIN_B - 7_200.0],
-            ORIGIN_B + 200_000.0,
+            ORIGIN_B + 220_000.0,
         );
         assert!(app.live.is_empty(), "both blocks closed");
         let overall = |block: usize| {
@@ -4471,7 +4471,7 @@ mod tests {
         assert!(app.post_end() && app.animating(), "still repainting");
         let mut strokes = vec![(stroke, part)];
         sim.run(&mut app, &mut cb, stroke, &mut strokes, &hit_tx);
-        let live = app.live.last().expect("open until end + window");
+        let live = app.live.last().expect("open until end + beat");
         match live.perf.hits()[0].judgment {
             perf::Judgment::Hit { target, error, .. } => {
                 assert_eq!(target, 1);
@@ -4479,11 +4479,11 @@ mod tests {
             }
             j => panic!("{j:?}"),
         }
-        // end + window = 100 800 frames heard.
-        sim.run(&mut app, &mut cb, sim.wall(100_700.0), &mut vec![], &hit_tx);
+        // end + beat = 120 000 frames heard.
+        sim.run(&mut app, &mut cb, sim.wall(119_900.0), &mut vec![], &hit_tx);
         assert!(!app.live.is_empty());
-        sim.run(&mut app, &mut cb, sim.wall(100_900.0), &mut vec![], &hit_tx);
-        assert!(app.live.is_empty(), "closed past end + window");
+        sim.run(&mut app, &mut cb, sim.wall(120_100.0), &mut vec![], &hit_tx);
+        assert!(app.live.is_empty(), "closed past end + beat");
         assert!(!app.animating(), "nothing left to repaint for");
         let run = app.last_run.as_ref().unwrap();
         assert_eq!(run.ended_by, EndedBy::End);
@@ -4504,7 +4504,7 @@ mod tests {
         app.handle(perf_lesson("/l/p.md"));
         app.resume(0).unwrap();
         let mut sim = Sim::new(200);
-        // The last window closes at 94 800 heard, the performance at 100 800.
+        // The last window closes at 94 800 heard, the performance at 120 000.
         sim.run(&mut app, &mut cb, sim.wall(94_700.0), &mut vec![], &hit_tx);
         assert_eq!(app.live.last().unwrap().perf.misses().len(), 1);
         sim.run(&mut app, &mut cb, sim.wall(95_000.0), &mut vec![], &hit_tx);
@@ -4513,19 +4513,112 @@ mod tests {
     }
 
     #[test]
-    fn a_stroke_after_the_last_window_is_ignored() {
+    fn a_stroke_after_the_trail_is_ignored() {
         let (mut app, mut cb, hit_tx, _tx) = app_with(Store::default());
         app.handle(perf_lesson("/l/p.md"));
         app.resume(0).unwrap();
         let part = part_f(&app);
         let mut sim = Sim::new(0);
-        let stroke = sim.wall(100_850.0);
+        let stroke = sim.wall(120_050.0);
         let mut strokes = vec![(stroke, part)];
         sim.run(&mut app, &mut cb, stroke, &mut strokes, &hit_tx);
         let run = app.last_run.as_ref().unwrap();
         assert_eq!(run.ended_by, EndedBy::End);
         assert_eq!(run.hits.len(), 1);
         assert_eq!(run.hits[0].judgment, perf::RunJudgment::Ignored);
+    }
+
+    /// A late tap on the closing "one" of `P` (sparse part: pulses 0 and
+    /// 15) is kept for a beat after the end: 150 ms late, outside the 100 ms
+    /// window but within the 500 ms beat, so it is an extra annotated to the
+    /// missed closing instance and the report counts it wide.
+    #[test]
+    fn a_late_closing_tap_reaches_the_run_as_a_wide_extra() {
+        let dir = scratch("wide");
+        let runs = dir.join("runs");
+        let store = Store {
+            runs: Some(runs.clone()),
+            calibration: None,
+        };
+        let (mut app, mut cb, hit_tx, _tx) = app_with(store);
+        app.handle(perf_lesson("/l/p.md"));
+        app.resume(0).unwrap();
+        let rx = subscribe(&mut app);
+        let _ = lines(&rx);
+        let part = part_f(&app);
+        let mut sim = Sim::new(200);
+        let mut strokes = vec![(sim.wall(96_000.0 + 7_200.0), part)];
+        sim.run(
+            &mut app,
+            &mut cb,
+            sim.wall(119_900.0),
+            &mut strokes,
+            &hit_tx,
+        );
+        assert!(!app.live.is_empty(), "open until end + beat");
+        assert!(lines(&rx).iter().all(|l| !l.starts_with("ended")));
+        assert_eq!(app.written, None);
+        let files = |dir: &Path| std::fs::read_dir(dir).map_or(0, |d| d.count());
+        assert_eq!(files(&runs), 0);
+        sim.run(&mut app, &mut cb, sim.wall(120_100.0), &mut vec![], &hit_tx);
+        assert!(app.live.is_empty(), "closed past end + beat");
+        let written = app.written.clone().expect("run file written");
+        assert_eq!(
+            lines(&rx),
+            [format!(
+                "ended label=P by=end cycles=1/1 hit=0 miss=3 extra=1 run={} !",
+                written.display()
+            )]
+        );
+        assert!(written.starts_with(&runs) && written.exists());
+        assert_eq!(files(&runs), 1);
+        let run: Run = serde_json::from_str(&std::fs::read_to_string(&written).unwrap()).unwrap();
+        assert_eq!(run.ended_by, EndedBy::End);
+        assert_eq!(run.hits.len(), 1);
+        let h = &run.hits[0];
+        assert_eq!(
+            (h.judgment, h.cycle, h.pulse),
+            (perf::RunJudgment::Extra, 1, Some(0))
+        );
+        let text = crate::report::render(&run, None);
+        // targets hit miss extra wide
+        assert_eq!(
+            &crate::report::tests::row_of(&text, "Overall", "all")[4..6],
+            ["1", "1"],
+            "{text}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_stop_inside_the_trail_retires_the_run_by_stop() {
+        let (mut app, mut cb, hit_tx, _tx) = app_with(Store::default());
+        app.handle(perf_lesson("/l/p.md"));
+        app.resume(0).unwrap();
+        let rx = subscribe(&mut app);
+        let _ = lines(&rx);
+        let part = part_f(&app);
+        let mut sim = Sim::new(200);
+        let mut strokes = vec![(sim.wall(96_000.0 + 7_200.0), part)];
+        sim.run(
+            &mut app,
+            &mut cb,
+            sim.wall(104_000.0),
+            &mut strokes,
+            &hit_tx,
+        );
+        assert!(!app.live.is_empty(), "inside the trail");
+        app.handle(Request::Stop);
+        assert!(app.live.is_empty());
+        assert_eq!(
+            lines(&rx),
+            ["ended label=P by=stop cycles=1/1 hit=0 miss=3 extra=1 !"]
+        );
+        let run = app.last_run.as_ref().unwrap();
+        assert_eq!((run.ended_by, run.cycles_played), (EndedBy::Stop, 1));
+        assert_eq!(run.misses.len(), 3, "pulse 0, pulse 15 and the closing one");
+        assert_eq!(run.hits.len(), 1);
+        assert_eq!(run.hits[0].judgment, perf::RunJudgment::Extra);
     }
 
     #[test]
@@ -4856,7 +4949,7 @@ mod tests {
         app.handle(perf_lesson("/l/p.md"));
         app.resume(0).unwrap();
         let mut sim = Sim::new(0);
-        sim.run(&mut app, &mut cb, sim.at(2.2), &mut vec![], &hit_tx);
+        sim.run(&mut app, &mut cb, sim.at(2.6), &mut vec![], &hit_tx);
         assert_eq!(ended_by(&app), Some(EndedBy::End));
         assert!(app.notice.as_ref().unwrap().starts_with("run not saved: "));
         assert!(app.written.is_none());
@@ -4929,7 +5022,7 @@ mod tests {
         sim.run(
             &mut app,
             &mut cb,
-            sim.wall(ORIGIN_B + 2.0 * 96_000.0 + 12_000.0),
+            sim.wall(ORIGIN_B + 2.0 * 96_000.0 + 36_000.0),
             &mut vec![],
             &hit_tx,
         );
@@ -5120,7 +5213,7 @@ mod tests {
         app.handle(perf_lesson("/l/p.md"));
         app.resume(0).unwrap();
         let mut sim = Sim::new(0);
-        sim.run(&mut app, &mut cb, sim.at(2.2), &mut vec![], &hit_tx);
+        sim.run(&mut app, &mut cb, sim.at(2.6), &mut vec![], &hit_tx);
         assert_eq!(ended_by(&app), Some(EndedBy::End));
         let rx = subscribe(&mut app);
         assert_eq!(

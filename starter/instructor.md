@@ -372,7 +372,12 @@ Playing a part:
   and was outside the window, by `wide mean` on average. A miss and a
   wide extra together on one beat read as rushing (or dragging), not as
   losing the beat; an extra that is not wide is a stroke where nothing
-  was due. At a boundary of a score a stroke is judged by the block whose
+  was due. Strokes up to a beat after the closing "one" (or a window, if
+  that is longer) are still judged rather than dropped. A late tap there
+  is wide only while it is nearer the closing one than the part's next
+  stroke would be; on a part with a stroke just after the one, a missed
+  closing one and a plain extra can still be a dragged last tap. At a
+  boundary of a score a stroke is judged by the block whose
   target it is nearest, so a rush onto the next block's first downbeat is
   a wide extra in that block's report, not a stray in the previous one.
 - A "tap the beat" or "tap along" part is `"silent": true`, so the user
